@@ -1,13 +1,15 @@
 // Only GETs; never enrolls, stops, or sends to real tasks. Credentials stay in memory.
 const fs=require('node:fs');
 const assert=require('node:assert/strict');
+const {isDeepStrictEqual}=require('node:util');
 const {createClient}=require('../miniprogram/lib/api');
 const {wxHTTP}=require('../tests/test_mobile_http.cjs');
+function publicError(message){const error=new Error(message);error.safeToPrint=true;return error;}
 async function main(){
   const log=process.env.RELAY_PRIVATE_LOG;
-  if(!log) throw new Error('Set RELAY_PRIVATE_LOG to the private startup log; do not pass the token on the command line.');
+  if(!log) throw publicError('Set RELAY_PRIVATE_LOG to the private startup log; do not pass the token on the command line.');
   const tokens=[...fs.readFileSync(log,'utf8').matchAll(/连接凭据：(\S+)/g)];
-  if(!tokens.length) throw new Error('No startup credential found');
+  if(!tokens.length) throw publicError('No startup credential found');
   const token=tokens.at(-1)[1],base=process.env.RELAY_BASE_URL || 'http://127.0.0.1:8765';
   const transport=wxHTTP(),mobile=createClient(transport,base,token,{devtools:true});
   const web=async path=>{const r=await fetch(base+path,{headers:{'X-Resume-Token':token}});assert.equal(r.status,200);return r.json();};
@@ -18,7 +20,9 @@ async function main(){
     const stable=x=>name==='threads'?x.map(r=>({id:r.id,title:r.title,archived:r.archived,cwd:r.cwd})).sort((a,b)=>a.id.localeCompare(b.id)):
       name==='watches'?x.map(r=>({id:r.thread_id,enabled:r.enabled,status:r.status,attempts:r.attempts,max:r.max_resumes})).sort((a,b)=>a.id.localeCompare(b.id)):
       {ready:x.ready,primary:x.primary,secondary:x.secondary,limitId:x.limitId};
-    assert.deepEqual(stable(m),stable(w));
+    // AssertionError diffs contain private task titles/paths. Only name the
+    // mismatching endpoint; never log the response payload, even on failure.
+    if(!isDeepStrictEqual(stable(m),stable(w))) throw publicError('Data mismatch for '+name+'; payload omitted for privacy.');
     checks[name]={equal:true,count:Array.isArray(m)?m.length:undefined};
   }
   const task=process.env.RELAY_CHECK_THREAD;
@@ -26,4 +30,4 @@ async function main(){
   assert.equal(transport.calls.filter(c=>c.method!=='GET').length,0);
   console.log(JSON.stringify({at:new Date().toISOString(),scope:'real backend; actual mobile client with Node HTTP adapter, NOT WeChat runtime',checks,mutations:0},null,2));
 }
-main().catch(e=>{console.error(e.message);process.exitCode=1;});
+main().catch(e=>{console.error(e.safeToPrint?e.message:'Read-only verification failed; check connection, credentials and response format. Private payload omitted.');process.exitCode=1;});

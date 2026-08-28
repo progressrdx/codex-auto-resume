@@ -1,5 +1,8 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PENDING_KEY = 'relay-unconfirmed-actions-v1';
+const WATCH_STATES = ['starting','watching','waiting_quota','waiting_connection','needs_attention',
+  'resumed','stopped','paused','uncertain','blocked','budget','changed','retrying'];
+let operationSequence = 0;
 function address(value, devtools) {
   const s = String(value || '').trim().replace(/\/$/, '');
   const match = /^(https?):\/\/([a-z0-9.-]+)(?::([0-9]{1,5}))?$/i.exec(s);
@@ -27,8 +30,11 @@ function createClient(wxApi, base, token, options) {
   let closed = false;
   function allPending() { return wxApi.getStorageSync(PENDING_KEY) || {}; }
   function pending() { const item = allPending()[origin]; return item || null; }
-  function record(value) {
+  function record(value, expected) {
     const rows = allPending();
+    // An old connection may finish after its intent was acknowledged and replaced.
+    // Its response can settle only its own intent, never a newer request's lock.
+    if (expected && (!rows[origin] || rows[origin].operationId !== expected.operationId)) return;
     if (value) rows[origin] = value; else delete rows[origin];
     // Fail closed BEFORE dispatch if durable intent cannot be saved.
     wxApi.setStorageSync(PENDING_KEY, rows);
@@ -49,7 +55,7 @@ function createClient(wxApi, base, token, options) {
           }
           try {
             const result = validate(path, response.data);
-            if (method === 'POST' && ((path === '/api/start' && (result.threadId !== data.threadId || typeof result.status !== 'string')) || (path === '/api/stop' && result.stopped !== data.threadId))) throw new Error('操作响应不匹配，请核对监控记录。');
+            if (method === 'POST' && ((path === '/api/start' && (result.threadId !== data.threadId || !WATCH_STATES.includes(result.status))) || (path === '/api/stop' && result.stopped !== data.threadId))) throw new Error('操作响应不匹配，请核对监控记录。');
             resolve(result);
           } catch (error) { error.uncertain = method === 'POST'; reject(error); }
         },
@@ -61,13 +67,14 @@ function createClient(wxApi, base, token, options) {
     if (closed) throw new Error('连接已断开，请重新连接。');
     if (writing || pending()) throw new Error('上一次操作尚未确认，请先核对监控记录。');
     writing = true;
+    const intent = {action, threadId:data.threadId, createdAt:Date.now(), operationId:Date.now() + '-' + (++operationSequence)};
     try {
-      record({action, threadId:data.threadId, createdAt:Date.now()});
+      record(intent);
       const result = await request('/api/' + action, 'POST', data);
-      record(null);
+      record(null, intent);
       return result;
     } catch (error) {
-      if (!error.uncertain) record(null);
+      if (!error.uncertain) record(null, intent);
       throw error;
     } finally { writing = false; }
   }

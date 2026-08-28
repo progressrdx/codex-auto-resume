@@ -49,6 +49,18 @@ test('ambiguous POST is durable across clients, never retried automatically',asy
   reopened.acknowledgePending();const stopped=reopened.stop(A);answer(wx.calls[1],{stopped:A});await stopped;
   assert.equal(reopened.pending(),null);assert.ok(!JSON.stringify(wx.storage).includes('test-credential'));
 });
+test('late result from a closed client cannot clear a newer operation intent',async()=>{
+  for(const status of [200,403]) {
+    const wx=platform(),old=client(wx);const first=old.start(A,1,true);const handled=first.catch(()=>{});
+    old.close();const reopened=client(wx);reopened.acknowledgePending();
+    const second=reopened.start(B,1,true);
+    answer(wx.calls[0],status===200?{threadId:A,status:'watching'}:{error:'rejected'},status);await handled;
+    assert.equal(reopened.pending().threadId,B);
+    wx.calls[1].fail();await assert.rejects(second,e=>e.uncertain);
+    assert.equal(reopened.pending().threadId,B);
+    await assert.rejects(reopened.stop(B));assert.equal(wx.calls.length,2);
+  }
+});
 test('HTTP 409/5xx stay uncertain, explicit rejected requests do not block forever',async()=>{
   for(const status of [409,500,502,504,401,403,400]) {
     const wx=platform(),api=client(wx),p=api.start(A,1,true);answer(wx.calls[0],{error:'failure'},status);await assert.rejects(p);
@@ -108,13 +120,50 @@ test('backgrounding during preflight prevents sending; errors survive successful
   const h=pageHarness();h.p.data.error='结果未确认';const fresh=h.p.refresh();
   answer(h.wx.calls[0],[]);answer(h.wx.calls[1],{ready:true});await fresh;assert.equal(h.p.data.error,'结果未确认');
 });
+test('hide then show invalidates preflight instead of reviving an old start request',async()=>{
+  const {p,wx}=pageHarness();p.refresh=async()=>{};p.poll=()=>{};
+  p.setData({selected:{id:A},canStart:true,consent:true,maximum:'1'});
+  const started=p.start();p.onHide();p.onShow();answer(wx.calls[0],assessment(A));await flush();
+  assert.equal(wx.calls.length,1);await started;assert.equal(p.data.writing,false);
+});
+test('background round-trip invalidates stop and pending acknowledgement confirmations',async()=>{
+  for(const action of ['stop','acknowledge']) {
+    const {p,wx}=pageHarness();p.refresh=async()=>{};p.poll=()=>{};
+    p.data.watches=[{thread_id:A,enabled:1}];
+    if(action==='acknowledge') {
+      const start=p.client.start(A,1,true);wx.calls[0].fail();await assert.rejects(start);
+      p.data.pending=p.client.pending();
+    }
+    const before=wx.calls.length;let modal;wx.showModal=o=>{modal=o;};
+    const pending=p[action](event(A));p.onHide();p.onShow();modal.success({confirm:true});await flush();
+    assert.equal(wx.calls.length,before);
+    if(action==='acknowledge') assert.ok(p.client.pending());
+    await pending;
+  }
+});
+test('unload always closes a connection and invalidates preflight even while writing',async()=>{
+  const {p,wx}=pageHarness();p.refresh=async()=>{};
+  p.setData({selected:{id:A},canStart:true,consent:true,maximum:'1'});
+  const api=p.client,started=p.start();p.onUnload();answer(wx.calls[0],assessment(A));await flush();
+  assert.equal(wx.calls.length,1);assert.equal(p.client,null);await started;
+  await assert.rejects(api.threads(),/断开/);
+});
+test('unload after dispatch preserves uncertain intent without refreshing the destroyed page',async()=>{
+  const {p,wx}=pageHarness();let refreshed=0;p.refresh=async()=>{refreshed++;};
+  p.setData({selected:{id:A},canStart:true,consent:true,maximum:'1'});
+  const api=p.client,started=p.start();answer(wx.calls[0],assessment(A));await flush();
+  p.onUnload();wx.calls[1].fail();await started;
+  assert.equal(p.client,null);assert.equal(refreshed,0);assert.equal(api.pending().threadId,A);
+});
 test('archived row cannot be enrolled even if a malformed eligibility service says yes',async()=>{
   const {p,wx}=pageHarness();p.data.threads[0].archived=true;const q=p.select(event(A));answer(wx.calls[0],assessment(A));await q;assert.equal(p.data.canStart,false);
 });
-test('wrong task mutation acknowledgement remains pending; no false success',async()=>{
-  const wx=platform(),api=client(wx),p=api.start(A,1,true);
-  answer(wx.calls[0],{threadId:B,status:'watching'});await assert.rejects(p,e=>e.uncertain);
-  assert.equal(api.pending().threadId,A);await assert.rejects(api.start(A,1,true));assert.equal(wx.calls.length,1);
+test('wrong task or unknown status acknowledgement remains pending; no false success',async()=>{
+  for(const result of [{threadId:B,status:'watching'},{threadId:A,status:'invented'}]) {
+    const wx=platform(),api=client(wx),p=api.start(A,1,true);
+    answer(wx.calls[0],result);await assert.rejects(p,e=>e.uncertain);
+    assert.equal(api.pending().threadId,A);await assert.rejects(api.start(A,1,true));assert.equal(wx.calls.length,1);
+  }
 });
 test('stop cancel makes no POST; confirmed stop targets exactly the selected watch',async()=>{
   const {p,wx}=pageHarness();p.refresh=async()=>{};p.data.watches=[{thread_id:A,enabled:1}];

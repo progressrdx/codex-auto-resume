@@ -11,7 +11,7 @@ Page({
   },
   onShow() { this.visible = true; if (this.client) this.refresh(); this.poll(); },
   onHide() { this.visible = false; clearTimeout(this.timer); this.selection++; this.setData({canStart:false,checking:false}); },
-  onUnload() { this.disconnect(); },
+  onUnload() { this.visible = false; this.releaseConnection(); },
   onPullDownRefresh() { Promise.resolve(this.client ? this.refresh(true) : null).finally(() => wx.stopPullDownRefresh()); },
   poll() {
     clearTimeout(this.timer);
@@ -37,10 +37,15 @@ Page({
     } catch (error) { if (candidate) candidate.close(); if (epoch === this.epoch) { this.client = null; getApp().client = null; this.setData({connected:false,error:error.message}); } }
     finally { if (epoch === this.epoch) this.setData({loading:false}); }
   },
-  disconnect() {
-    if (this.data.writing) return;
+  releaseConnection() {
+    // Lifecycle cleanup must run even when an explicit disconnect is disabled.
+    // An already dispatched POST keeps its durable intent until its result is known.
     clearTimeout(this.timer); this.epoch++; this.selection++; this.refreshVersion++;
     if (this.client) this.client.close(); this.client = null; getApp().client = null;
+  },
+  disconnect() {
+    if (this.data.writing) return;
+    this.releaseConnection();
     this.setData({connected:false,credential:'',threads:[],filtered:[],watches:[],selected:null,assessment:null,
       canStart:false,loading:false,checking:false,error:'',notice:'',pending:null,view:'overview'});
   },
@@ -96,12 +101,12 @@ Page({
     const target = this.data.selected.id;
     const maximum = Number(this.data.maximum);
     if (!Number.isInteger(maximum) || maximum < 1 || maximum > 100) { this.setData({error:'累计续跑上限应为 1–100 的整数。'}); return; }
-    const client = this.client, epoch = this.epoch;
+    const client = this.client, epoch = this.epoch, selection = this.selection;
     this.setData({writing:true,canStart:false,error:'',notice:''});
     try {
       // Recheck immediately before mutation. Backend also checks independently.
       const current = await client.check(target);
-      if (epoch !== this.epoch || !this.visible) return;
+      if (epoch !== this.epoch || selection !== this.selection || !this.visible) return;
       if (!eligible(current)) throw new Error('任务状态已变化，不再适合托管。');
       await client.start(target,maximum,true);
       if (epoch === this.epoch) this.setData({view:'overview',notice:'后端已接受开启请求。请查看下面的实际监控状态。'});
@@ -112,11 +117,11 @@ Page({
     if (!this.client || this.data.writing || this.client.pending()) return;
     const target = e.currentTarget.dataset.id;
     if (!this.data.watches.some(r => r.thread_id === target && r.enabled)) return;
-    const epoch = this.epoch, client = this.client;
+    const epoch = this.epoch, client = this.client, selection = this.selection;
     this.setData({writing:true,error:'',notice:''});
     try {
       const confirmed = await new Promise(resolve => wx.showModal({title:'停止这个任务的托管？',content:'只停止未来的自动续跑，不中断 App 正在执行的任务，也不能撤回已发送的消息。',confirmText:'停止托管',success:r=>resolve(r.confirm),fail:()=>resolve(false)}));
-      if (!confirmed || epoch !== this.epoch || !this.visible) return;
+      if (!confirmed || epoch !== this.epoch || selection !== this.selection || !this.visible) return;
       await client.stop(target);
       if (epoch === this.epoch) this.setData({notice:'后端已接受停止请求。'});
     } catch (error) { if (epoch === this.epoch) this.setData({error:error.message}); }
@@ -124,8 +129,8 @@ Page({
   },
   async acknowledge() {
     if (!this.client || this.data.writing) return;
-    const client = this.client, epoch = this.epoch;
+    const client = this.client, epoch = this.epoch, selection = this.selection;
     const confirmed = await new Promise(resolve => wx.showModal({title:'已经核对监控记录？',content:'解除待确认不会重发请求。请先确认后端实际状态，再决定是否需要新的操作。',confirmText:'已核对',success:r=>resolve(r.confirm),fail:()=>resolve(false)}));
-    if (confirmed && epoch === this.epoch) { client.acknowledgePending(); this.setData({pending:null,error:''}); }
+    if (confirmed && epoch === this.epoch && selection === this.selection && this.visible) { client.acknowledgePending(); this.setData({pending:null,error:''}); }
   }
 });
