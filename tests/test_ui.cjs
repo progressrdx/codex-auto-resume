@@ -1,0 +1,193 @@
+// No browser/account access. Execute the actual UI script with a minimal DOM to
+// deterministically exercise overlapping requests; visual checks remain separate.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const path = require('node:path');
+const A = '11111111-1111-4111-8111-111111111111';
+const B = '22222222-2222-4222-8222-222222222222';
+class Element {
+  constructor() { this.children=[];this.listeners={};this.attrs={};this.dataset={};this.value='';this._text='';this.hidden=false;this.open=false; }
+  set textContent(value) { this._text=String(value);this.children=[]; }
+  get textContent() { return this._text + this.children.map(c=>c.textContent).join(' '); }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this._text='';this.children=children; }
+  setAttribute(key,value) { this.attrs[key]=value; }
+  addEventListener(name,fn) { (this.listeners[name]??=[]).push(fn); }
+  emit(name) { for(const fn of this.listeners[name]??[]) fn({preventDefault(){}}); }
+  querySelectorAll(selector) { const all=this.children.flatMap(c=>[c,...c.querySelectorAll('*')]);return selector==='*'?all:all.filter(c=>c.className?.split(' ').includes(selector.slice(1))); }
+  querySelector(selector) { return this.querySelectorAll(selector)[0]; }
+  showModal() { this.open=true; }
+  scrollIntoView() { this.scrolled=true; }
+  focus() { this.focused=true; }
+  close() { this.open=false;this.emit('close'); }
+}
+function harness() {
+  const elements=new Map(), pending=[];
+  const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
+  const context=vm.createContext({
+    document:{getElementById:el,createElement:()=>new Element(),addEventListener(){},hidden:false},
+    sessionStorage:{getItem(){return '';},setItem(){},removeItem(){}},
+    location:{hash:'',pathname:'/',protocol:'http:',host:'127.0.0.1:8765'},history:{replaceState(){}},
+    URLSearchParams,console,setInterval(){},
+    fixture:[{id:A,title:'Task A'},{id:B,title:'Task B'}],
+    fetch(url) { return new Promise(resolve=>pending.push({url,reply(result,status=200){resolve({ok:status===200,status,json:async()=>result});}})); }
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../codex_resume/static/app.js'),'utf8'),context);
+  const run=code=>vm.runInContext(code,context);
+  run('threads=fixture; renderThreads();'); el('task-dialog').open=true;
+  return {el,pending,run,choose(id){el('thread-id').value=id;el('thread-id').emit('input');},result(id,decision='wait'){return {threadId:id,decision,title:id===A?'Task A':'Task B',reason:'test',model:'test-model',taskState:decision==='stop'?'idle':'running',canMonitor:decision!=='stop',source:'live'};}};
+}
+
+test('click selects exactly one row and synchronizes the UUID and title',async()=>{
+  const h=harness(); const rows=h.el('thread-options').children;
+  rows[0].emit('click');
+  assert.equal(h.el('thread-id').value,A);
+  assert.equal(h.el('selected-title').textContent,'Task A');
+  assert.equal(rows[0].attrs['aria-pressed'],'true');
+  assert.equal(rows[1].attrs['aria-pressed'],'false');
+  assert.equal(rows[0].querySelector('.selection-marker').hidden,false);
+  rows[1].emit('click');
+  assert.equal(h.el('thread-id').value,B);
+  assert.equal(h.el('selected-title').textContent,'Task B');
+  assert.equal(rows[0].attrs['aria-pressed'],'false');
+  assert.equal(rows[1].attrs['aria-pressed'],'true');
+});
+
+test('late failure for A cannot overwrite successful check for B',async()=>{
+  const h=harness();h.choose(A);const old=h.run('checkTask()');
+  h.choose(B);const current=h.run('checkTask()');
+  h.pending[1].reply(h.result(B));await current;
+  h.pending[0].reply({error:'old owner missing'},409);await old;
+  assert.equal(h.el('start-form').hidden,false);
+  assert.equal(h.el('action-error').textContent,'');
+  assert.match(h.el('check-result').textContent,/Task B/);
+  assert.doesNotMatch(h.el('check-result').textContent,/old owner missing/);
+});
+
+test('A to B to A ignores the first A response even though UUID matches again',async()=>{
+  const h=harness();h.choose(A);const first=h.run('checkTask()');
+  h.choose(B);h.choose(A);const latest=h.run('checkTask()');
+  h.pending[1].reply(h.result(A,'stop'));await latest;
+  h.pending[0].reply(h.result(A,'wait'));await first;
+  assert.equal(h.el('start-form').hidden,true);
+  assert.equal(h.run('checked.decision'),'stop');
+});
+
+test('an older finally cannot enable the button while the next check is pending',async()=>{
+  const h=harness();h.choose(A);const first=h.run('checkTask()');
+  h.choose(B);const next=h.run('checkTask()');
+  h.pending[0].reply(h.result(A));await first;
+  assert.equal(h.el('check-button').disabled,true);
+  h.pending[1].reply(h.result(B));await next;
+  assert.equal(h.el('check-button').disabled,false);
+});
+
+test('closing the picker invalidates the pending response',async()=>{
+  const h=harness();h.choose(A);const request=h.run('checkTask()');
+  h.el('task-dialog').close();
+  h.pending[0].reply(h.result(A));await request;
+  assert.equal(h.el('start-form').hidden,true);
+  assert.equal(h.el('check-result').hidden,true);
+  assert.equal(h.run('checked'),null);
+});
+
+test('failure identifies selected task and gives recovery guidance without enabling start',async()=>{
+  const h=harness();h.choose(A);const request=h.run('checkTask()');
+  h.pending[0].reply({error:'App owner unavailable'},409);await request;
+  assert.match(h.el('check-result').textContent,/Task A/);
+  assert.match(h.el('check-result').textContent,/历史/);
+  assert.match(h.el('check-result').textContent,/没有开启监控或发送消息/);
+  assert.equal(h.el('start-form').hidden,true);
+});
+
+test('unknown decision and mismatched thread response cannot enable start',async()=>{
+  for(const result of [{threadId:A,decision:'unknown'},{threadId:B,decision:'wait'}]){
+    const h=harness();h.choose(A);const request=h.run('checkTask()');
+    h.pending[0].reply(result);await request;
+    assert.equal(h.el('start-form').hidden,true);
+  }
+});
+
+test('manual UUID edits update selection and invalidate prior successful check',async()=>{
+  const h=harness();h.choose(A);const request=h.run('checkTask()');
+  h.pending[0].reply(h.result(A));await request;
+  h.choose(B.toUpperCase());
+  assert.equal(h.el('selected-title').textContent,'Task B');
+  assert.equal(h.run('selectedId()'),B);
+  assert.equal(h.el('start-form').hidden,true);
+  assert.equal(h.run('checked'),null);
+});
+
+test('only running or quota-limited selected tasks can be enrolled',async()=>{
+  for(const taskState of ['idle','empty','needs_attention','interrupted','other_failure','unknown']){
+    const h=harness();h.choose(A);const request=h.run('checkTask()');
+    h.pending[0].reply({...h.result(A),taskState,canMonitor:false});await request;
+    assert.equal(h.el('start-form').hidden,true,taskState);
+  }
+  for(const taskState of ['running','quota_limited']){
+    const h=harness();h.choose(A);const request=h.run('checkTask()');
+    h.pending[0].reply({...h.result(A),taskState,source:'history',connection:'waiting'});await request;
+    assert.equal(h.el('start-form').hidden,false);
+    assert.match(h.el('check-result').textContent,/重新核验实时状态/);
+  }
+});
+
+test('decision alone without explicit eligibility cannot enable start',async()=>{
+  const h=harness();h.choose(A);const request=h.run('checkTask()');
+  h.pending[0].reply({threadId:A,decision:'wait',taskState:'running'});await request;
+  assert.equal(h.el('start-form').hidden,true);
+});
+
+test('archived conversations remain searchable when requested',()=>{
+  const h=harness();h.run('threads[1].archived=true;renderThreads();');
+  assert.equal(h.el('thread-options').children.length,1);
+  h.el('show-archived').checked=true;h.el('show-archived').emit('change');
+  assert.equal(h.el('thread-options').children.length,2);
+  h.el('search').value='Task B';h.el('search').emit('input');
+  assert.equal(h.el('thread-options').children.length,1);
+  assert.match(h.el('thread-options').textContent,/Task B/);
+});
+
+test('ordinary task selection and watch cards do not display internal UUIDs',()=>{
+  const h=harness();
+  assert.doesNotMatch(h.el('thread-options').textContent,new RegExp(A));
+  h.el('thread-options').children[0].emit('click');
+  assert.equal(h.el('thread-id').value,A); // Still bound internally to the exact task.
+  assert.equal(h.el('selected-title').textContent,'Task A');
+  h.run(`renderWatches([{thread_id:'${A}',enabled:0,status:'stopped',reason:'done',attempts:0,max_resumes:3,updated:1000}])`);
+  assert.doesNotMatch(h.el('watch-list').textContent,new RegExp(A));
+  assert.match(h.el('watch-list').textContent,/Task A/);
+});
+
+test('opening the picker collapses manual entry and keeps check hidden until selection',async()=>{
+  const h=harness();h.el('manual-selection').open=true;
+  const request=h.run('openChooser()');
+  assert.equal(h.el('manual-selection').open,false);
+  assert.equal(h.el('check-button').hidden,true);
+  h.pending[0].reply([{id:A,title:'Task A'}]);await request;
+  h.el('thread-options').children[0].emit('click');
+  assert.equal(h.el('check-button').hidden,false);
+});
+
+test('check result can return directly to search instead of scrolling the entire list',async()=>{
+  const h=harness();h.choose(A);const request=h.run('checkTask()');
+  h.pending[0].reply(h.result(A));await request;
+  h.el('check-result').querySelector('.back-to-list').emit('click');
+  assert.equal(h.el('picker-browser').hidden,false);
+  assert.equal(h.el('task-details').hidden,true);
+  assert.equal(h.el('search').focused,true);
+});
+
+test('returning to the fixed list invalidates an in-flight check without losing scroll position',async()=>{
+  const h=harness();h.el('thread-options').scrollTop=400;h.choose(A);const request=h.run('checkTask()');
+  assert.equal(h.el('picker-browser').hidden,true);
+  assert.equal(h.el('task-details').hidden,false);
+  h.el('check-result').querySelector('.back-to-list').emit('click');
+  h.pending[0].reply(h.result(A));await request;
+  assert.equal(h.el('picker-browser').hidden,false);
+  assert.equal(h.el('task-details').hidden,true);
+  assert.equal(h.el('thread-options').scrollTop,400);
+  assert.equal(h.run('checked'),null);
+});

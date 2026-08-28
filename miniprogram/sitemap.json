@@ -1,0 +1,1 @@
+{"desc":"私人任务控制台不参与搜索","rules":[{"action":"disallow","page":"*"}]}

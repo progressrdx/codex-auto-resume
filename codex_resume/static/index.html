@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#12695c"><meta name="color-scheme" content="light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>续航 · Codex Relay</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="#overview" aria-label="续航首页"><img src="/icon.svg" width="38" height="38" alt=""><span>续航<small>CODEX RELAY</small></span></a>
+    <p class="side-caption">让长任务接着走</p>
+    <nav aria-label="主导航">
+      <a href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>控制台</a>
+      <a href="#tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>监控任务 <span id="nav-count" class="count">0</span></a>
+      <a href="#connection"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="3"/><path d="M10 18h4"/></svg>设备连接</a>
+    </nav>
+    <div class="side-bottom"><span class="pill">macOS 实验版</span><p>工作留在 Codex App。<br>续航只负责等待与继续。</p><small id="version">App 版本待检查</small></div>
+  </aside>
+  <main id="main">
+    <header class="topbar"><span>本机工作站 <span class="slash">/</span> 续跑管理</span><span class="connection-state" id="connection-state">尚未连接</span></header>
+    <section id="overview" class="overview">
+      <div class="page-heading"><div><p class="eyebrow">WORK CONTINUES</p><h1>把等待，交给续航。</h1><p class="subtitle">额度自然恢复后，在原任务里接着做。</p></div><button class="button secondary" id="refresh" disabled>刷新状态</button></div>
+      <section id="login-panel" class="login-panel" aria-labelledby="login-heading">
+        <div><span class="pill">先连接本机服务</span><h2 id="login-heading">你的任务，只由你控制。</h2><p>输入启动服务时显示的连接凭据。凭据只保留在当前标签页，服务重启后需要重新连接。</p></div>
+        <form id="login-form"><label for="token">连接凭据</label><div class="input-row"><input id="token" name="token" type="password" autocomplete="off" required placeholder="从服务终端复制" spellcheck="false"><button class="button primary" type="submit">连接</button></div><p id="login-error" class="error" role="alert"></p></form>
+      </section>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section class="quota-board" aria-labelledby="quota-heading">
+        <div class="section-top"><h2 id="quota-heading">额度窗口</h2><span class="meta" id="quota-updated">连接后读取真实额度</span></div>
+        <div class="quota-grid">
+          <article class="quota-window"><div class="quota-label"><span>五小时窗口</span><span class="pill muted">短周期</span></div><div class="quota-number"><strong id="primary-percent">—</strong><span>剩余额度</span></div><progress id="primary-bar" max="100" value="0" aria-label="五小时窗口剩余额度"></progress><div class="quota-footer"><span id="primary-reset">重置时间待读取</span><span id="primary-clock" class="mono">—</span></div></article>
+          <article class="quota-window"><div class="quota-label"><span>每周窗口</span><span class="pill muted">长周期</span></div><div class="quota-number"><strong id="secondary-percent">—</strong><span>剩余额度</span></div><progress id="secondary-bar" max="100" value="0" aria-label="每周窗口剩余额度"></progress><div class="quota-footer"><span id="secondary-reset">重置时间待读取</span><span id="secondary-clock" class="mono">—</span></div></article>
+        </div>
+        <div class="quota-note"><span class="dot" aria-hidden="true"></span><span id="quota-reason">只读取账户状态，不运行模型、不购买或重置额度。</span></div>
+      </section>
+      <section id="tasks" class="tasks-section" aria-labelledby="tasks-heading">
+        <div class="section-top"><div><h2 id="tasks-heading">监控任务 <span id="task-count" class="subtle">0</span></h2><p class="section-description">选定长任务 → 等待额度恢复 → 在原对话继续。</p></div><button class="button primary" id="choose-task" disabled><span aria-hidden="true">＋</span> 托管长任务</button></div>
+        <p id="watch-error" class="error" role="alert"></p>
+        <div id="watch-list" class="watch-list"><div class="empty-state"><div class="relay-symbol" aria-hidden="true"><span></span><i></i><span></span></div><h3>还没有监控任务</h3><p>连接后选择执行中或因额度暂停的长任务。<br>若它因额度耗尽停止，续航会等待恢复。</p><span class="empty-note">不会接管其他任务 · 不会自动批准操作</span></div></div>
+        <p class="freshness" id="watch-updated">监控记录尚未读取</p>
+      </section>
+      <section class="how-it-works" aria-label="续跑如何工作"><div><span class="step-index">1</span><strong>识别额度失败</strong><p>正常完成或手动停止，不会续跑。</p></div><div><span class="step-index">2</span><strong>等待自然恢复</strong><p>同时检查五小时与每周额度。</p></div><div><span class="step-index">3</span><strong>在原任务继续</strong><p>保留模型设置，不跳过任何审批。</p></div></section>
+      <section id="connection" class="device-section" aria-labelledby="device-heading"><div><p class="eyebrow">ONE WORKSTATION, TWO SCREENS</p><h2 id="device-heading">电脑运行，手机查看。</h2><p>手机浏览器使用同一套控制台。Codex App 和本机服务需要保持运行；关闭网页不会停止后台监控。</p><p class="meta" id="access-mode">当前服务地址待确认</p></div><details><summary>如何在手机上连接</summary><p>首版本机地址无法直接从手机访问。请在可信网络内，为 Mac 的固定局域网地址配置手机信任的 HTTPS 证书，再使用服务的 <code>--host</code>、<code>--certfile</code> 与 <code>--keyfile</code> 参数启动。</p><p>手机打开该 HTTPS 地址并输入连接凭据。可使用浏览器“添加到主屏幕”；这不是原生 App，也不会在手机后台执行 Codex。不要开启公网端口映射或转发连接凭据。</p></details></section>
+      <footer><span>续航 · 小而专注的 Codex 配套工具</span><span>跨自然额度重置的完整流程仍待实测</span><button id="disconnect" class="text-button" hidden>断开此页面</button></footer>
+    </section>
+  </main>
+</div>
+<dialog id="task-dialog" aria-labelledby="dialog-title">
+  <div class="dialog-heading"><div><p class="eyebrow">SELECT A TASK</p><h2 id="dialog-title">选择一个长任务</h2></div><button id="close-dialog" class="close-button" aria-label="关闭选择任务窗口">×</button></div>
+  <div class="dialog-content"><div id="picker-browser"><div id="picker-controls"><p class="section-description">选择执行中或因额度暂停的长任务，额度恢复后在原对话继续。</p>
+    <label for="search">搜索本地对话</label><input id="search" type="search" placeholder="输入对话标题" autocomplete="off"><p id="thread-error" class="error" role="alert"></p>
+    <div class="picker-toolbar"><label class="confirmation"><input id="show-archived" type="checkbox"><span>显示已归档对话</span></label><p id="thread-count" class="meta" role="status"></p></div>
+
+    </div><div id="thread-options" class="thread-options" aria-label="本地对话"></div>
+    <form id="check-form"><details id="manual-selection" class="manual-selection"><summary>使用会话编号（高级）</summary><p class="field-help">仅用于精确定位或排查问题。正常使用时直接从列表选择对话即可。</p><label for="thread-id">会话 UUID</label><input id="thread-id" type="text" required autocomplete="off" spellcheck="false" placeholder="粘贴完整的会话编号"></details><button class="button secondary" type="submit" id="check-button" hidden>检查任务</button></form>
+    </div><div id="task-details" hidden>
+    <div id="selected-task" class="selected-task" role="status" hidden><span class="pill">当前选中</span><strong id="selected-title"></strong></div>
+    <div id="check-result" class="check-result" role="status" hidden></div>
+    <form id="start-form" hidden><div class="form-columns"><div><label for="max-resumes">累计续跑上限</label><input id="max-resumes" type="number" min="1" max="100" value="3" required><p class="field-help">包含历史尝试，重新开启不清零。</p></div><details><summary>高级设置</summary><div><label for="limit-id">额度桶 ID（可选）</label><input id="limit-id" type="text" placeholder="默认单一 codex 桶" maxlength="100"><p class="field-help">多个额度桶时需明确填写。</p></div></details></div><label class="confirmation"><input id="confirm-start" type="checkbox" required><span>只托管这个长任务，允许工具在需要时打开它的原对话。我会关闭其他排队消息与续跑自动化；停止托管不会撤回已发消息。</span></label><button class="button primary full" type="submit" id="start-button">加入托管</button></form>
+    </div><p id="action-error" class="error" role="alert"></p>
+  </div>
+</dialog>
+<dialog id="stop-dialog" aria-labelledby="stop-title"><div class="dialog-heading"><h2 id="stop-title">停止这个任务的监控？</h2></div><div class="dialog-content"><p id="stop-task" class="selected-title"></p><p>只取消后续自动续跑。已经发送的消息不会撤回，正在执行的 Codex 任务不会被打断。</p><div class="dialog-actions"><button id="cancel-stop" class="button secondary">保留监控</button><button id="confirm-stop" class="button danger">停止监控</button></div><p id="stop-error" class="error" role="alert"></p></div></dialog>
+</body></html>

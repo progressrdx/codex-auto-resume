@@ -1,0 +1,17 @@
+{
+  "name": "codex-relay-verification",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/test_ui.cjs tests/test_miniprogram.cjs tests/test_mobile_http.cjs",
+    "test:mobile-api": "node --test tests/test_mobile_http.cjs",
+    "test:mobile-runtime": "node scripts/verify_miniprogram_runtime.cjs"
+  },
+  "devDependencies": {
+    "miniprogram-automator": "0.12.1"
+  },
+  "overrides": {
+    "minimist": "1.2.8",
+    "jpeg-js": "0.4.4",
+    "phin": "3.7.1"
+  }
+}
