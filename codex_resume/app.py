@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import select
 import socket
 import stat
 import struct
@@ -65,6 +66,7 @@ class Desktop:
         self.thread_id = None
         self.snapshot_value = None
         self.revision = None
+        self.state_generation = 0
 
     def __enter__(self):
         check_version(self.app_path)
@@ -132,6 +134,7 @@ class Desktop:
             if params.get('conversationId') == self.thread_id and params.get('hostId') == 'local' and msg.get('sourceClientId') == self.owner:
                 if msg.get('version') != 11:
                     raise AppError('App 状态协议版本已变化')
+                self.state_generation += 1
                 change = params.get('change', {})
                 if change.get('type') == 'snapshot':
                     self.snapshot_value = change.get('conversationState')
@@ -139,6 +142,8 @@ class Desktop:
                 elif change.get('type') == 'patches':
                     # Do not infer current state from a partial/missed patch stream.
                     self.snapshot_value = None
+                else:
+                    raise AppError('App 状态变更格式不受支持')
         return msg
 
     def request(self, method, params, version, target=None):
@@ -186,13 +191,33 @@ class Desktop:
             raise AppError('App 返回了不匹配的任务状态')
         return state
 
-    def resume(self, thread_id, expected_fingerprint, message_id):
+    def _drain_pending(self):
+        """Consume already-arrived events before dispatch, never apply patches.
+
+        This closes the queued-event window, not the inherent non-atomic gap
+        between the App's state check and its start-turn operation. A busy or
+        partial stream fails closed rather than allowing an unbounded drain.
+        """
+        deadline = time.monotonic() + self.timeout
+        for _ in range(128):
+            if not select.select([self.sock], [], [], 0)[0]:
+                return
+            self._read(deadline)
+        raise AppError('App 状态仍在变化；取消本次续跑')
+
+    def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
         check_version(self.app_path)  # Stop if the app updated while we were waiting.
         state = self.snapshot(thread_id)
         if decide(state).action != 'resume' or fingerprint(state) != expected_fingerprint:
             raise AppError('发送前任务状态已改变；取消本次续跑')
+        generation = self.state_generation
+        self._drain_pending()
+        if generation != self.state_generation:
+            raise AppError('发送前已收到新的任务状态；取消本次续跑')
         request = {'threadId': thread_id, 'clientUserMessageId': message_id,
                    'input': [{'type': 'text', 'text': CONTINUATION, 'text_elements': []}]}
+        if dispatch_guard is not None and not dispatch_guard():
+            raise AppError('托管已停止或发送授权已改变；取消本次续跑')
         reply = self.request('thread-follower-start-turn',
                              {'conversationId': thread_id, 'turnStart': {'request': request}},
                              2, self.owner)

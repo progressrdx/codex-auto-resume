@@ -244,6 +244,18 @@ class TaskDiscoveryTests(unittest.TestCase):
 
     @patch('codex_resume.tasks.ReadOnlyServer')
     @patch('codex_resume.tasks.Desktop')
+    def test_socket_timeout_selection_falls_back_to_read_only_history(self, desktop, server):
+        import socket
+        desktop.return_value.__enter__.return_value.snapshot.side_effect = socket.timeout
+        reader = server.return_value.__enter__.return_value
+        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored('inProgress')}]
+        result = inspect_task(Path('/home'), Path('/app'), THREAD)
+        self.assertTrue(result['canMonitor'])
+        self.assertEqual(result['source'], 'history')
+        self.assertEqual(result['decision'], 'wait')
+
+    @patch('codex_resume.tasks.ReadOnlyServer')
+    @patch('codex_resume.tasks.Desktop')
     def test_incompatible_live_state_never_falls_back(self, desktop, server):
         reader = server.return_value.__enter__.return_value
         reader.query.return_value = {'data':[], 'nextCursor':None}
@@ -299,7 +311,9 @@ class FakeDesktop:
     def __enter__(self): return self
     def __exit__(self, *args): pass
     def snapshot(self, thread): return self.data
-    def resume(self, thread, baseline, message):
+    def resume(self, thread, baseline, message, dispatch_guard=None):
+        if dispatch_guard is not None and not dispatch_guard():
+            raise AppError('synthetic cancelled dispatch')
         self.calls.append((thread, baseline, message))
         if self.fail: raise TimeoutError()
         return 'new-turn'
@@ -421,6 +435,43 @@ class ControllerTests(unittest.TestCase):
         self.controller.quota_reader = read
         self.assertFalse(self.controller.step()); self.assertFalse(self.desktop.calls)
 
+    def test_stop_during_final_snapshot_does_not_send_or_overwrite_pause(self):
+        app = Desktop('/unused')
+        def snapshot(thread):
+            self.store.stop(thread)
+            return self.desktop.data
+        app.snapshot = snapshot
+        from unittest.mock import Mock
+        app.request = Mock(return_value={'result': {'result': {'turn': {'id': 'new'}}}})
+        self.desktop.resume = app.resume
+        with patch('codex_resume.app.check_version'), patch.object(app, '_drain_pending'):
+            self.assertFalse(self.controller.step())
+        app.request.assert_not_called()
+        row = self.store.get(THREAD)
+        self.assertEqual((row['enabled'], row['status']), (0, 'paused'))
+        self.assertTrue(self.store.uncertain(THREAD))
+
+    def test_stop_during_quota_wait_preserves_paused_status(self):
+        def read():
+            self.store.stop(THREAD)
+            return quota(100)
+        self.controller.quota_reader = read
+        self.controller.step()
+        self.assertEqual(self.store.get(THREAD)['status'], 'paused')
+        self.assertFalse(self.desktop.calls)
+
+    def test_final_dispatch_guard_checks_claim_and_current_budget(self):
+        message = self.store.claim(THREAD, 't1', 'hash')
+        self.assertTrue(self.store.can_dispatch(THREAD, 't1', message))
+        self.assertFalse(self.store.can_dispatch(THREAD, 't1', 'other-message'))
+        self.assertFalse(self.store.can_dispatch(THREAD, 'other-turn', message))
+        with self.store.db:
+            self.store.db.execute('UPDATE watches SET max_resumes=0 WHERE thread_id=?', (THREAD,))
+        self.assertFalse(self.store.can_dispatch(THREAD, 't1', message))
+        self.store.arm(THREAD, 3)
+        self.store.acknowledged(THREAD, 't1', 'new')
+        self.assertFalse(self.store.can_dispatch(THREAD, 't1', message))
+
     def test_repeated_read_failure_stops(self):
         def fail(): raise OSError()
         self.controller.desktop_factory = fail
@@ -482,6 +533,14 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(opened, [])
         self.assertFalse(self.desktop.calls)
 
+    def test_socket_timeout_keeps_enrollment_on_supported_python_versions(self):
+        import socket
+        with patch.object(self.desktop, 'snapshot', side_effect=socket.timeout):
+            for _ in range(5):
+                self.assertTrue(self.controller.step())
+        self.assertEqual(self.store.get(THREAD)['enabled'], 1)
+        self.assertFalse(self.desktop.calls)
+
     def test_reconnect_does_not_open_task_that_became_ineligible(self):
         self.controller.open_thread = lambda tid: False
         with patch.object(self.desktop, 'snapshot', side_effect=ThreadUnavailable):
@@ -526,6 +585,48 @@ class FakeSocket:
 
 
 class TransportTests(unittest.TestCase):
+    @patch('codex_resume.app.check_version')
+    def test_resume_observes_already_queued_ipc_events_before_dispatch(self, check):
+        import socket
+        def broadcast(change, owner='owner'):
+            return {'type': 'broadcast', 'sourceClientId': owner,
+                    'method': 'thread-stream-state-changed', 'version': 11,
+                    'params': {'hostId': 'local', 'conversationId': THREAD, 'change': change}}
+        initial = broadcast({'type': 'snapshot', 'revision': 1, 'conversationState': state()})
+        changed = state(); changed['requests'] = [{'method': 'approval'}]
+        cases = [
+            ('patch', [broadcast({'type': 'patches', 'revision': 2, 'patches': []})], AppError),
+            ('snapshot', [broadcast({'type': 'snapshot', 'revision': 2, 'conversationState': changed})], AppError),
+            ('unknown-change', [broadcast({'type': 'future-format'})], AppError),
+            ('unrelated', [broadcast({'type': 'patches'}, 'unrelated-owner')], None),
+            ('busy', [{'type': 'notification'}] * 129, AppError),
+            ('partial-frame', [], (TimeoutError, socket.timeout)),
+        ]
+        for name, pending, failure in cases:
+            with self.subTest(name=name):
+                client, peer = socket.socketpair()
+                try:
+                    client.settimeout(.05); peer.settimeout(.05)
+                    app = Desktop('/unused', timeout=.05); app.sock = client
+                    data = FakeSocket([initial] + pending).data
+                    if name == 'partial-frame': data += struct.pack('<I', 12) + b'{'
+                    peer.sendall(data)
+                    calls = []
+                    def request(method, *args, **kwargs):
+                        if method == 'thread-owner-discovery': return {'handledByClientId': 'owner'}
+                        calls.append(method)
+                        return {'result': {'result': {'turn': {'id': 'new'}}}}
+                    app.request = request
+                    if failure:
+                        with self.assertRaises(failure):
+                            app.resume(THREAD, fingerprint(state()), 'synthetic-message')
+                        self.assertEqual(calls, [])
+                    else:
+                        self.assertEqual(app.resume(THREAD, fingerprint(state()), 'synthetic-message'), 'new')
+                        self.assertEqual(calls, ['thread-follower-start-turn'])
+                finally:
+                    client.close(); peer.close()
+
     def test_fragmented_frames(self):
         app = Desktop('/unused'); app.sock = FakeSocket([{'type': 'response', 'result': '中文'}])
         self.assertEqual(app._read(time.monotonic()+1)['result'], '中文')
@@ -553,7 +654,8 @@ class TransportTests(unittest.TestCase):
         def request(method, params, version, target):
             calls.append((method,params));return {'result':{'result':{'turn':{'id':'new'}}}}
         app.request=request
-        self.assertEqual(app.resume(THREAD,fingerprint(state()),'message'),'new')
+        with patch.object(app, '_drain_pending'):
+            self.assertEqual(app.resume(THREAD,fingerprint(state()),'message'),'new')
         request=calls[0][1]['turnStart']['request']
         self.assertEqual(set(request), {'threadId','clientUserMessageId','input'})
         with self.assertRaises(AppError): app.resume(THREAD,'changed','message2')
@@ -565,7 +667,110 @@ class TransportTests(unittest.TestCase):
             with self.assertRaises(ValueError): server.query(method,{})
 
 
+class StartupTests(unittest.TestCase):
+    @patch('codex_resume.__main__.check_version')
+    @patch('codex_resume.__main__.inspect_task', return_value={'canMonitor': True})
+    def test_second_start_during_spawn_cannot_replace_budget(self, inspect, version):
+        from codex_resume.__main__ import main
+        with tempfile.TemporaryDirectory() as directory:
+            def fail_spawn(*args, **kwargs):
+                self.assertEqual(len(kwargs['pass_fds']), 1)
+                with self.assertRaisesRegex(RuntimeError, '已有一个监控进程'):
+                    main(['--state-dir', directory, 'start', THREAD, '--max-resumes', '7'])
+                ledger = Store(directory)
+                try:
+                    self.assertEqual(ledger.get(THREAD)['max_resumes'], 3)
+                finally:
+                    ledger.close()
+                raise OSError('synthetic spawn failure')
+            with patch('codex_resume.__main__.subprocess.Popen', side_effect=fail_spawn):
+                with self.assertRaises(OSError):
+                    main(['--state-dir', directory, 'start', THREAD])
+            ledger = Store(directory)
+            try:
+                self.assertEqual(ledger.get(THREAD)['enabled'], 0)
+                ledger.lock(THREAD)  # Failed launch released the parent's lock.
+            finally:
+                ledger.close()
+
+    @patch('codex_resume.__main__.check_version')
+    @patch('codex_resume.__main__.inspect_task', return_value={'canMonitor': True})
+    def test_log_or_spawn_failure_disables_starting_watch(self, inspect, version):
+        from codex_resume.__main__ import main
+        for failure in ('log', 'spawn', 'spawn_after_stop'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                if failure == 'log':
+                    (Path(directory) / (THREAD + '.log')).symlink_to(Path(directory) / 'absent')
+                def fail_spawn(*args, **kwargs):
+                    if failure == 'spawn_after_stop':
+                        other = Store(directory)
+                        try:
+                            other.stop(THREAD)
+                        finally:
+                            other.close()
+                    raise OSError('synthetic spawn failure')
+                with patch('codex_resume.__main__.subprocess.Popen', side_effect=fail_spawn) as spawn:
+                    with self.assertRaises((OSError, RuntimeError)):
+                        main(['--state-dir', directory, 'start', THREAD])
+                    if failure == 'log':
+                        spawn.assert_not_called()
+                ledger = Store(directory)
+                try:
+                    row = ledger.get(THREAD)
+                    self.assertEqual(row['enabled'], 0)
+                    if failure == 'spawn_after_stop':
+                        self.assertEqual(row['status'], 'paused')
+                    else:
+                        self.assertEqual(row['status'], 'blocked')
+                finally:
+                    ledger.close()
+
+
 class IntegrationTests(unittest.TestCase):
+    def test_inherited_lock_survives_parent_close_and_is_not_reinherited(self):
+        import select
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Store(directory)
+            parent.lock(THREAD)
+            fd = parent.lock_file.fileno()
+            code = ('import os,sys; from codex_resume.store import Store; '
+                    's=Store(sys.argv[1]); s.lock(sys.argv[2], inherited_fd=int(sys.argv[3])); '
+                    'assert not os.get_inheritable(s.lock_file.fileno()); '
+                    'print("held",flush=True); sys.stdin.readline(); s.close()')
+            child = subprocess.Popen([sys.executable, '-c', code, directory, THREAD, str(fd)],
+                pass_fds=(fd,), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True)
+            try:
+                self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                self.assertEqual(child.stdout.readline().strip(), 'held')
+                parent.close()
+                other = Store(directory)
+                try:
+                    with self.assertRaises(RuntimeError): other.lock(THREAD)
+                    child.communicate('\n', timeout=5)
+                    self.assertEqual(child.returncode, 0)
+                    other.lock(THREAD)
+                finally:
+                    other.close()
+            finally:
+                if parent.lock_file and not parent.lock_file.closed:
+                    parent.close()
+                if child.poll() is None:
+                    child.kill(); child.communicate(timeout=5)
+
+    def test_inherited_lock_rejects_unrelated_file_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Store(directory)
+            (Path(directory) / (THREAD + '.lock')).touch(mode=0o600)
+            try:
+                with tempfile.TemporaryFile(dir=directory) as unrelated:
+                    with self.assertRaises(RuntimeError):
+                        ledger.lock(THREAD, inherited_fd=unrelated.fileno())
+            finally:
+                ledger.close()
+
     def test_rpc_real_subprocess_coalesced_notifications(self):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / 'server'

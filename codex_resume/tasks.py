@@ -1,4 +1,5 @@
 """Conversation discovery and enrollment, separate from permission to send."""
+import socket
 import time
 import uuid
 
@@ -98,7 +99,7 @@ def inspect_task(home, app_path, thread_id):
                     'runtime': state.get('threadRuntimeStatus'), 'model': state.get('latestModel'),
                     'ignoredInterruptedPickerRequests': sum(interrupted_context_picker(state, r)
                         for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
-    except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError):
+    except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
         pass
     with ReadOnlyServer(app_path / 'Contents/Resources/codex', home) as server:
         response = server.query('thread/read', {'threadId': thread_id, 'includeTurns': True})

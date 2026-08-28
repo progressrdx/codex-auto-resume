@@ -54,6 +54,8 @@ def parser():
         item.add_argument('thread', type=identifier)
         item.add_argument('--max-resumes', type=positive, default=3, help='该任务累计尝试次数上限（默认 3）')
         item.add_argument('--limit-id', default=None, help='多个额度桶时显式选择；单 codex 桶自动识别')
+        if name == '_watch':
+            item.add_argument('--lock-fd', type=int, default=None, help=argparse.SUPPRESS)
     return p
 
 
@@ -62,7 +64,7 @@ def output(value):
 
 
 def serve_watch(args, store):
-    store.lock(args.thread)
+    store.lock(args.thread, inherited_fd=args.lock_fd)
     quota = None
     def read_quota():
         nonlocal quota
@@ -166,18 +168,25 @@ def main(argv=None):
                 raise RuntimeError('累计尝试次数已达到上限；检查记录后再决定是否提高 --max-resumes')
             store.lock(args.thread)
             store.arm(args.thread, args.max_resumes)
-            store.lock_file.close()
-            store.lock_file = None
+            # Keep the same flock held across process creation. The child adopts
+            # this descriptor; closing only the parent's copy cannot unlock it.
+            lock_fd = store.lock_file.fileno()
             log = args.state_dir / (args.thread + '.log')
-            fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
             cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
-                   '--state-dir', str(args.state_dir), '_watch', args.thread, '--max-resumes', str(args.max_resumes)]
+                   '--state-dir', str(args.state_dir), '_watch', args.thread, '--max-resumes', str(args.max_resumes),
+                   '--lock-fd', str(lock_fd)]
             if args.limit_id:
                 cmd += ['--limit-id', args.limit_id]
-            with os.fdopen(fd, 'ab') as stream:
-                child = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
-                                         stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
-                                         start_new_session=True)
+            try:
+                fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'ab') as stream:
+                    child = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
+                                             stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
+                                             start_new_session=True, pass_fds=(lock_fd,))
+            except Exception:
+                store.update(args.thread, 'blocked', '后台进程启动失败；未启用托管', True,
+                             only_enabled=True)
+                raise
             # Verify child liveness and its first ledger update, rather than claim launch from Popen alone.
             for _ in range(40):
                 state = store.get(args.thread)
@@ -186,7 +195,7 @@ def main(argv=None):
                 time.sleep(0.1)
             if child.poll() is not None:
                 if store.get(args.thread)['status'] == 'starting':
-                    store.update(args.thread, 'blocked', '后台进程启动失败', True)
+                    store.update(args.thread, 'blocked', '后台进程启动失败', True, only_enabled=True)
                 raise RuntimeError('后台监控已停止，请用 status 查看原因')
             output({'threadId': args.thread, 'pid': child.pid, 'log': str(log),
                     'status': store.get(args.thread)['status'],

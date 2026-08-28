@@ -42,9 +42,18 @@ class Store:
             self.lock_file.close()
         self.db.close()
 
-    def lock(self, thread_id):
+    def lock(self, thread_id, inherited_fd=None):
         path = self.directory / (str(uuid.UUID(thread_id)) + '.lock')
-        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        if inherited_fd is None:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        else:
+            fd = inherited_fd
+            expected, actual = path.lstat(), os.fstat(fd)
+            if (not stat.S_ISREG(expected.st_mode) or not stat.S_ISREG(actual.st_mode)
+                    or (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino)
+                    or actual.st_uid != os.getuid() or actual.st_mode & 0o077):
+                raise RuntimeError('继承的进程锁不是所选任务的私有锁文件')
+            os.set_inheritable(fd, False)
         f = os.fdopen(fd, 'w')
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -67,11 +76,12 @@ class Store:
     def all(self):
         return [dict(r) for r in self.db.execute('SELECT * FROM watches ORDER BY updated DESC')]
 
-    def update(self, thread_id, status, reason, disable=False):
+    def update(self, thread_id, status, reason, disable=False, only_enabled=False):
         with self.db:
             self.db.execute('''UPDATE watches SET status=?,reason=?,pid=?,updated=?,
-                enabled=CASE WHEN ? THEN 0 ELSE enabled END WHERE thread_id=?''',
-                (status, reason, os.getpid(), time.time(), int(disable), thread_id))
+                enabled=CASE WHEN ? THEN 0 ELSE enabled END WHERE thread_id=?
+                AND (?=0 OR enabled=1)''',
+                (status, reason, os.getpid(), time.time(), int(disable), thread_id, int(only_enabled)))
 
     def stop(self, thread_id):
         self.update(thread_id, 'paused', '用户已关闭自动续跑', True)
@@ -107,3 +117,16 @@ class Store:
         with self.db:
             self.db.execute("UPDATE attempts SET state='sent',resumed_turn=? WHERE thread_id=? AND failed_turn=?",
                             (resumed_turn, thread_id, turn_id))
+
+    def can_dispatch(self, thread_id, turn_id, message_id):
+        """Final local cancellation/budget check for this exact persisted intent.
+
+        This read is deliberately next to the adapter's network write, after its
+        potentially slow fresh snapshot. It cannot make the App write atomic.
+        """
+        row = self.db.execute('''SELECT 1 FROM watches w JOIN attempts a
+            ON a.thread_id=w.thread_id WHERE w.thread_id=? AND w.enabled=1
+            AND a.failed_turn=? AND a.message_id=? AND a.state='dispatching'
+            AND (SELECT count(*) FROM attempts WHERE thread_id=w.thread_id)<=w.max_resumes''',
+            (thread_id, turn_id, message_id)).fetchone()
+        return row is not None
