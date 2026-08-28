@@ -6,6 +6,8 @@
 
 2026-08-29：用户 AppID 已接入，微信模拟器实际请求已验证模拟任务开启/停止及真实对话、额度、托管数据一致性；[分层验证记录](VALIDATION.md)。手机可信 HTTPS 和扫码真机仍待完成，不能将模拟器测试视为最终交付。
 
+当前 **0.1.1** 已完成四路对抗审计和隔离修复回归，见 [审计报告](AUDIT.md) 与 [版本记录](CHANGELOG.md)。这不是生产安全认证。
+
 ## 当前验证边界
 
 - 支持本机 App `26.820.60940 / build 7119`，Bundle ID `com.openai.codex`。当前默认路径为 `/Applications/ChatGPT.app`。
@@ -115,6 +117,10 @@ python3 -m codex_resume stop 你的任务UUID
 
 可在子命令前指定 `--app /路径/ChatGPT.app`、`--home /路径/.codex`、`--state-dir /私有状态目录`。首次运行若受终端沙箱限制，需用户允许本地进程/socket 访问；工具不会自动放宽权限。
 
+Web 0.1.1 使用 Web Locks 和同源本地存储记录未确认操作；缺少其中任一能力时只读，不能开启或停止。凭据仍只在标签页会话存储，持久意图不包含凭据或对话正文。未知结果跨刷新/重连/标签页保留，必须先读取记录、人工确认没有在途请求，再明确解除；解除本身不重发。不要通过清浏览器数据规避保护。
+
+升级不会热更新已经运行的Python服务或watcher。应在当前任务安全停点，使用原版本正常停止托管，确认无不确定发送，再重启Web并按需要重新选择任务；服务重启会轮换凭据。已有数据库格式不变、预算和去重记录不清空。本轮审计没有替用户执行这些生产操作。
+
 ## 开发验证
 
 ```sh
@@ -122,6 +128,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q codex_resume
 node --test tests/test_ui.cjs
 node --check codex_resume/static/app.js
+python3 scripts/verify_release.py
 ```
 
 测试使用内存消息、回环 HTTP/HTTPS 服务和独立临时数据库，不访问账户、不修改 App、不启动真实任务。HTTPS 测试使用 OpenSSL 生成临时证书并显式信任该证书，不安装系统信任。源码仅包含自写适配代码，不包含 App 打包源码或账户数据。
