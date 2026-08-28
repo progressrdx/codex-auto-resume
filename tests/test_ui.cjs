@@ -23,21 +23,26 @@ class Element {
   focus() { this.focused=true; }
   close() { this.open=false;this.emit('close'); }
 }
-function harness() {
+function harness(shared = {}) {
   const elements=new Map(), pending=[];
+  const storage=shared.storage || new Map();
+  const locks=shared.locks || {held:false};
   const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const context=vm.createContext({
     document:{getElementById:el,createElement:()=>new Element(),addEventListener(){},hidden:false},
     sessionStorage:{getItem(){return '';},setItem(){},removeItem(){}},
+    localStorage:{getItem(key){return storage.get(key)||null;},setItem(key,value){storage.set(key,value);},removeItem(key){storage.delete(key);}},
+    navigator:{locks:{async request(name,options,callback){(locks.calls??=[]).push({name,options});if(locks.held)return callback(null);locks.held=true;try{return await callback({name});}finally{locks.held=false;}}}},
+    window:{addEventListener(){}},
     location:{hash:'',pathname:'/',protocol:'http:',host:'127.0.0.1:8765'},history:{replaceState(){}},
-    URLSearchParams,console,setInterval(){},
+    URLSearchParams,console,setInterval(){},setTimeout(...args){const timer=setTimeout(...args);timer.unref();return timer;},clearTimeout,AbortController,
     fixture:[{id:A,title:'Task A'},{id:B,title:'Task B'}],
-    fetch(url) { return new Promise(resolve=>pending.push({url,reply(result,status=200){resolve({ok:status===200,status,json:async()=>result});}})); }
+    fetch(url,options) { return new Promise((resolve,reject)=>pending.push({url,options,reject,reply(result,status=200){resolve({ok:status===200,status,json:async()=>result});}})); }
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../codex_resume/static/app.js'),'utf8'),context);
   const run=code=>vm.runInContext(code,context);
   run('threads=fixture; renderThreads();'); el('task-dialog').open=true;
-  return {el,pending,run,choose(id){el('thread-id').value=id;el('thread-id').emit('input');},result(id,decision='wait'){return {threadId:id,decision,title:id===A?'Task A':'Task B',reason:'test',model:'test-model',taskState:decision==='stop'?'idle':'running',canMonitor:decision!=='stop',source:'live'};}};
+  return {el,pending,run,storage,locks,choose(id){el('thread-id').value=id;el('thread-id').emit('input');},result(id,decision='wait'){return {threadId:id,decision,title:id===A?'Task A':'Task B',reason:'test',model:'test-model',taskState:decision==='stop'?'idle':'running',canMonitor:decision!=='stop',source:'live'};}};
 }
 
 test('click selects exactly one row and synchronizes the UUID and title',async()=>{
@@ -190,4 +195,106 @@ test('returning to the fixed list invalidates an in-flight check without losing 
   assert.equal(h.el('task-details').hidden,true);
   assert.equal(h.el('thread-options').scrollTop,400);
   assert.equal(h.run('checked'),null);
+});
+
+
+function prepareStart(h) {
+  h.choose(A);h.run(`checked={threadId:'${A}',canMonitor:true,taskState:'running',decision:'wait'}`);
+  h.el('max-resumes').value='1';h.el('confirm-start').checked=true;
+}
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+test('POST success requires matching task and recognized start status',{timeout:2000},async()=>{
+  for(const result of [{threadId:B,status:'watching'},{threadId:A,status:'invented'},{}]) {
+    const h=harness();prepareStart(h);const request=h.run('startTask({preventDefault(){}})');
+    await tick();h.pending[0].reply(result);await request;
+    assert.doesNotMatch(h.el('notice').textContent,/任务已提交监控/);
+    assert.ok(h.run('pendingMutation()'));
+  }
+  const h=harness();h.run(`openStop({thread_id:'${A}'})`);const request=h.run('stopTask()');
+  await tick();h.pending[0].reply({});await request;
+  assert.doesNotMatch(h.el('notice').textContent,/已停止后续/);
+  assert.ok(h.run('pendingMutation()'));
+});
+test('stale login error cannot disconnect a newly authenticated session',{timeout:2000},async()=>{
+  const h=harness();h.el('login-button').className='utton';h.el('login-form').append(h.el('login-button'));
+  const old=h.run("token='old';login()");h.run('forget()');const newer=h.run("token='new';login()");
+  h.pending[1].reply([]);await tick();assert.equal(h.run('connected'),true);
+  h.pending[0].reply([]);await old;assert.equal(h.run('connected'),true);
+  for(const p of h.pending.slice(2))p.reply(p.url.includes('quota')?{app:{},ready:false}:[]);
+  await tick();for(const p of h.pending.slice(2))p.reply([]);await newer;
+});
+test('uncertain POST persists through reselect and new tab; simultaneous tabs cannot write',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);const first=h.run('startTask({preventDefault(){}})');await tick();
+  const other=harness({storage:h.storage,locks:h.locks});prepareStart(other);
+  await other.run('startTask({preventDefault(){}})');assert.equal(other.pending.length,0);
+  h.pending[0].reject(new Error('lost connection'));await first;
+  prepareStart(h);await h.run('startTask({preventDefault(){}})');assert.equal(h.pending.length,1);
+  const reload=harness({storage:h.storage,locks:h.locks});prepareStart(reload);
+  await reload.run('startTask({preventDefault(){}})');assert.equal(reload.pending.length,0);
+});
+test('confirmed rejection releases intent but storage failure prevents any POST',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);const first=h.run('startTask({preventDefault(){}})');await tick();
+  h.pending[0].reply({error:'bad input'},400);await first;assert.equal(h.run('pendingMutation()'),null);
+  prepareStart(h);h.run("localStorage.setItem=()=>{throw new Error('storage unavailable')}");
+  await h.run('startTask({preventDefault(){}})');assert.equal(h.pending.length,1);
+});
+test('unlock requires fresh read and consent; cannot unlock another tab while request is active',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);const first=h.run('startTask({preventDefault(){}})');await tick();
+  const other=harness({storage:h.storage,locks:h.locks});other.run('connected=true');other.el('confirm-mutation-review').checked=true;
+  await other.run('acknowledgeMutation()');assert.ok(other.run('pendingMutation()'));
+  other.run('lastWatchRead=Date.now()+1');await other.run('acknowledgeMutation()');assert.ok(other.run('pendingMutation()'));
+  h.pending[0].reject(new Error('lost connection'));await first;
+  other.el('confirm-mutation-review').checked=false;await other.run('acknowledgeMutation()');assert.ok(other.run('pendingMutation()'));
+  other.el('confirm-mutation-review').checked=true;await other.run('acknowledgeMutation()');assert.equal(other.run('pendingMutation()'),null);
+  assert.equal(other.pending.length,0);
+});
+
+test('same-origin mutation lock is identical across clients and always non-queueing',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);const first=h.run('startTask({preventDefault(){}})');await tick();
+  const other=harness({storage:h.storage,locks:h.locks});prepareStart(other);await other.run('startTask({preventDefault(){}})');
+  assert.equal(h.locks.calls.length,2);
+  assert.equal(h.locks.calls[0].name,'relay-web-mutation-v1');
+  for(const call of h.locks.calls){assert.equal(call.name,h.locks.calls[0].name);assert.equal(call.options.ifAvailable,true);}
+  h.pending[0].reply({threadId:A,status:'watching'});await first;assert.equal(h.run('pendingMutation()'),null);
+  other.run(`openStop({thread_id:'${A}'})`);const stop=other.run('stopTask()');await tick();
+  other.pending[0].reply({stopped:A});await stop;assert.equal(other.run('pendingMutation()'),null);
+  assert.match(other.el('notice').textContent,/已停止后续/);
+});
+test('unsupported Web Locks and unavailable storage visibly fail closed before any write',async()=>{
+  for(const setup of ["navigator.locks=undefined","localStorage.setItem=()=>{throw new Error('unavailable')}"]){
+    const h=harness();h.run(setup+';renderMutation()');
+    assert.equal(h.el('mutation-warning').hidden,false);assert.match(h.el('mutation-description').textContent,/只读，不能开启或停止/);
+    assert.equal(h.el('start-button').disabled,true);assert.equal(h.el('confirm-stop').disabled,true);
+    prepareStart(h);await h.run('startTask({preventDefault(){}})');assert.equal(h.pending.length,0);
+  }
+});
+test('CLI failure HTTP 409 remains uncertain and disconnect does not clear durable intent',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);const first=h.run('startTask({preventDefault(){}})');await tick();
+  h.pending[0].reply({error:'watcher may have launched'},409);await first;
+  assert.ok(h.run('pendingMutation()'));h.run('forget()');assert.ok(h.run('pendingMutation()'));
+});
+test('stale refresh failure cannot replace fresh records after reconnect',{timeout:2000},async()=>{
+  const h=harness();h.run('connected=true');const old=h.run('refresh(true)');h.run('forget();connected=true');
+  h.run(`renderWatches([{thread_id:'${A}',enabled:1,status:'watching'}])`);
+  const fresh=h.el('watch-list').textContent;
+  h.pending[0].reply({error:'old failure'},409);h.pending[1].reply({error:'old quota failure'},409);await old;
+  assert.equal(h.el('watch-list').textContent,fresh);assert.equal(h.el('watch-error').textContent,'');
+  assert.doesNotMatch(h.el('quota-reason').textContent,/old quota failure/);
+});
+
+test('delayed Web Lock cannot dispatch an old task under a replacement connection',{timeout:2000},async()=>{
+  const h=harness();prepareStart(h);
+  h.run("token='old';navigator.locks.request=(name,opts,fn)=>new Promise((resolve,reject)=>{globalThis.releaseLock=()=>Promise.resolve(fn({name})).then(resolve,reject)})");
+  const request=h.run('startTask({preventDefault(){}})');
+  h.run("forget();token='new';releaseLock()");await request;
+  assert.equal(h.pending.length,0);assert.equal(h.run('pendingMutation()'),null);
+});
+test('delayed unlock rechecks connection and withdrawn consent before removing intent',{timeout:2000},async()=>{
+  for(const change of ['forget()',"$('confirm-mutation-review').checked=false"]){
+    const h=harness();h.run(`localStorage.setItem(MUTATION_KEY,JSON.stringify({action:'start',threadId:'${A}',createdAt:1}));connected=true;lastWatchRead=2`);
+    h.el('confirm-mutation-review').checked=true;
+    h.run("navigator.locks.request=(name,opts,fn)=>new Promise((resolve,reject)=>{globalThis.releaseLock=()=>Promise.resolve(fn({name})).then(resolve,reject)})");
+    const request=h.run('acknowledgeMutation()');h.run(change+';releaseLock()');await request;
+    assert.ok(h.run('pendingMutation()'));assert.equal(h.pending.length,0);
+  }
 });

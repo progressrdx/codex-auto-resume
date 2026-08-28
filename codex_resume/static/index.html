@@ -30,6 +30,12 @@
         <form id="login-form"><label for="token">连接凭据</label><div class="input-row"><input id="token" name="token" type="password" autocomplete="off" required placeholder="从服务终端复制" spellcheck="false"><button class="button primary" type="submit">连接</button></div><p id="login-error" class="error" role="alert"></p></form>
       </section>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section id="mutation-warning" class="notice warning" role="status" hidden>
+        <strong>操作保护</strong><p id="mutation-description"></p>
+        <button id="refresh-mutation" class="button secondary" type="button">刷新监控记录</button>
+        <label class="confirmation"><input id="confirm-mutation-review" type="checkbox"><span>我已在本机核对结果，确认没有仍在处理的请求；允许解除本浏览器的保护。</span></label>
+        <button id="acknowledge-mutation" class="button secondary" type="button" disabled>仅解除保护，不重试操作</button>
+      </section>
       <section class="quota-board" aria-labelledby="quota-heading">
         <div class="section-top"><h2 id="quota-heading">额度窗口</h2><span class="meta" id="quota-updated">连接后读取真实额度</span></div>
         <div class="quota-grid">

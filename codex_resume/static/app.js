@@ -18,6 +18,11 @@ let lastQuotaFetch = 0;
 let starting = false;
 let checkGeneration = 0;
 let pickerGeneration = 0;
+let lastWatchRead = 0;
+let refreshGeneration = 0;
+const MUTATION_KEY = 'relay-unconfirmed-web-action-v1';
+const MUTATION_LOCK = 'relay-web-mutation-v1';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const assessments = new Map();
 const taskStates = {running:'任务执行中', quota_limited:'因额度暂停', needs_attention:'需要你处理',
   idle:'本轮已结束', empty:'空对话', interrupted:'已手动停止', other_failure:'其他错误',
@@ -33,6 +38,68 @@ function node(tag, cls, text) { const el = document.createElement(tag); if (cls)
 function notice(text, warning = false) { $('notice').textContent = text; $('notice').className = warning ? 'notice warning' : 'notice'; $('notice').hidden = !text; }
 function busy(button, value, label) { button.disabled = value; button.setAttribute('aria-busy', String(value)); button.textContent = label; }
 function timeLabel(value) { return new Date(value * 1000).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}); }
+function pendingMutation() {
+  try {
+    const raw=localStorage.getItem(MUTATION_KEY);
+    if(raw===null) return null;
+    const value=JSON.parse(raw);
+    if(!value || !['start','stop'].includes(value.action) || !UUID.test(value.threadId) || !Number.isFinite(value.createdAt)) throw new Error('invalid intent');
+    return value;
+  } catch { return {invalid:true}; } // Corrupt/unavailable storage is never permission to resend.
+}
+function mutationUnavailable() {
+  if(!navigator.locks?.request) return '当前浏览器不支持安全的跨标签互斥：只读，不能开启或停止监控。';
+  try {
+    const key=MUTATION_KEY+'-storage-probe';localStorage.setItem(key,'1');localStorage.removeItem(key);
+  } catch { return '浏览器存储不可用：只读，不能开启或停止监控。'; }
+  return '';
+}
+function renderMutation() {
+  const pending=pendingMutation(), unavailable=mutationUnavailable();
+  $('mutation-warning').hidden=!pending && !unavailable;
+  $('mutation-description').textContent=unavailable || (pending ? '上次开启或停止操作的结果尚未确认。刷新、重连和其他标签页都不会自动重试。请在本机核对监控记录和正在处理的请求。' : '');
+  $('acknowledge-mutation').disabled=!pending || !!unavailable || !connected || !$('confirm-mutation-review').checked || lastWatchRead <= (pending.createdAt || 0);
+  $('start-button').disabled=starting || !!pending || !!unavailable;
+  $('confirm-stop').disabled=!!pending || !!unavailable;
+}
+async function acknowledgeMutation() {
+  const pending=pendingMutation();
+  if(!pending || mutationUnavailable() || !connected || !$('confirm-mutation-review').checked || lastWatchRead <= (pending.createdAt || 0)) { renderMutation(); return; }
+  const generation=authGeneration;
+  try {
+    await navigator.locks.request(MUTATION_LOCK,{ifAvailable:true},async lock=>{
+      if(generation!==authGeneration || !connected || !$('confirm-mutation-review').checked || lastWatchRead <= (pending.createdAt || 0))return;
+      if(!lock) throw new Error('仍有标签页正在发送请求，不能解除保护。');
+      const current=pendingMutation();
+      if(JSON.stringify(current)!==JSON.stringify(pending)) throw new Error('待核对的操作已变化，请重新刷新。');
+      localStorage.removeItem(MUTATION_KEY);
+      $('confirm-mutation-review').checked=false;
+      notice('已按你的人工核对解除保护；没有发送或重试任何操作。');
+    });
+  } catch(e) { notice(e.message,true); }
+  renderMutation();
+}
+async function mutate(action,data) {
+  const generation=authGeneration;
+  const unavailable=mutationUnavailable();
+  if(unavailable) throw new Error(unavailable);
+  return navigator.locks.request(MUTATION_LOCK,{ifAvailable:true},async lock=>{
+    if(generation!==authGeneration) throw new Error('连接已变化，没有发送此操作。');
+    if(!lock || pendingMutation()) throw new Error('上一次操作尚未确认，请先核对监控记录。');
+    // Persist before dispatch, while holding the same origin-wide Web Lock.
+    localStorage.setItem(MUTATION_KEY,JSON.stringify({action,threadId:data.threadId,createdAt:Date.now()}));
+    $('confirm-mutation-review').checked=false;renderMutation();
+    try {
+      const result=await api(action,data);
+      if(!result || (action==='start' ? result.threadId!==data.threadId || !Object.hasOwn(states,result.status) : result.stopped!==data.threadId)) throw new Error('操作响应与任务或状态不匹配，结果尚未确认。');
+      localStorage.removeItem(MUTATION_KEY);
+      return result;
+    } catch(e) {
+      if([400,401,403,404,413,415].includes(e.status)) localStorage.removeItem(MUTATION_KEY);
+      throw e;
+    } finally { renderMutation(); }
+  });
+}
 function connectedUI(value) {
   connected = value;
   $('connection-state').textContent = value ? '控制台已连接' : '尚未连接';
@@ -41,10 +108,13 @@ function connectedUI(value) {
   $('refresh').disabled = !value;
   $('choose-task').disabled = !value;
   $('disconnect').hidden = !value;
+  renderMutation();
 }
 function forget() {
   authGeneration += 1;
+  refreshGeneration += 1; reading=false; lastWatchRead=0;
   token = ''; sessionStorage.removeItem('relay-token'); connectedUI(false);
+  const loginButton=$('login-form').querySelector('button');if(loginButton)busy(loginButton,false,'连接');
   quota = null; threads = []; checked = null; lastQuotaFetch = 0; assessments.clear();
   if ($('task-dialog').open) $('task-dialog').close();
   if ($('stop-dialog').open) $('stop-dialog').close();
@@ -56,7 +126,11 @@ function forget() {
 }
 async function api(path, data) {
   const generation = authGeneration;
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),70000);
+  try {
   const response = await fetch(`/api/${path}`, {
+    signal:controller.signal,
     method: data === undefined ? 'GET' : 'POST', cache: 'no-store',
     headers: {'X-Resume-Token': token, ...(data === undefined ? {} : {'Content-Type':'application/json'})},
     ...(data === undefined ? {} : {body: JSON.stringify(data)})
@@ -64,8 +138,9 @@ async function api(path, data) {
   const result = await response.json();
   if (generation !== authGeneration) throw new Error('连接已变化，请重新读取。');
   if (response.status === 401) { forget(); $('login-error').textContent = result.error; }
-  if (!response.ok) throw new Error(result.error || '服务暂时不可用，请稍后刷新。');
+  if (!response.ok) { const error=new Error(result.error || '服务暂时不可用，请稍后刷新。');error.status=response.status;throw error; }
   return result;
+  } finally { clearTimeout(timeout); }
 }
 function renderQuota(value) {
   quota = value;
@@ -96,7 +171,9 @@ function clocks() {
   }
 }
 function titleFor(id) { return threads.find(t=>t.id===id)?.title || '对话标题暂不可用'; }
-function renderWatches(rows) {
+function renderWatches(rows,readStarted=Date.now()) {
+  if(!Array.isArray(rows) || rows.some(r=>!r || !UUID.test(r.thread_id) || ![0,1,false,true].includes(r.enabled))) throw new Error('监控记录格式不正确，不能确认状态。');
+  lastWatchRead=Math.max(lastWatchRead,readStarted);renderMutation();
   $('watch-error').textContent = '';
   $('task-count').textContent = rows.length;
   $('nav-count').textContent = rows.filter(r=>r.enabled).length;
@@ -122,27 +199,34 @@ function renderWatches(rows) {
 async function refresh(forceQuota=false) {
   if (!connected || reading || document.hidden) return;
   reading=true; busy($('refresh'),true,'读取中…');
-  const jobs = [api('watches').then(renderWatches).catch(e=>{
+  const generation=authGeneration, request=++refreshGeneration, readStarted=Date.now();
+  const current=()=>generation===authGeneration && request===refreshGeneration;
+  const jobs = [api('watches').then(rows=>{if(current())renderWatches(rows,readStarted);}).catch(e=>{
+    if(!current()) return;
     $('watch-error').textContent=`读取失败：${e.message}`;
     $('watch-updated').textContent='以下是上次读取的记录，不能代表当前状态。';
     for(const button of $('watch-list').querySelectorAll('button')) button.disabled=true;
   })];
   if(forceQuota || Date.now()-lastQuotaFetch>60000) {
     lastQuotaFetch=Date.now();
-    jobs.push(api('quota').then(renderQuota).catch(e=>{ $('quota-reason').textContent=`读取失败：${e.message}`; $('quota-updated').textContent='数据可能过期，请刷新'; }));
+    jobs.push(api('quota').then(value=>{if(current())renderQuota(value);}).catch(e=>{ if(!current())return; $('quota-reason').textContent=`读取失败：${e.message}`; $('quota-updated').textContent='数据可能过期，请刷新'; }));
   }
-  await Promise.allSettled(jobs); reading=false; busy($('refresh'),!connected,'刷新状态');
+  await Promise.allSettled(jobs); if(current()){reading=false; busy($('refresh'),!connected,'刷新状态');}
 }
 async function login(event) {
   event?.preventDefault();
+  const generation=++authGeneration;
+  refreshGeneration+=1;reading=false;lastWatchRead=0;
   if(event) { token=$('token').value.trim(); sessionStorage.setItem('relay-token',token); }
   if(!token) return;
   const button=$('login-form').querySelector('button'); busy(button,true,'连接中…'); $('login-error').textContent='';
   try {
-    const rows=await api('watches'); connectedUI(true); $('token').value=''; renderWatches(rows); notice('');
-    await Promise.allSettled([refresh(true), api('threads').then(data=>{threads=data;}).then(()=>api('watches')).then(renderWatches)]);
-  } catch(e) { $('login-error').textContent=e.message; connectedUI(false); }
-  finally { busy(button,false,'连接'); }
+    const readStarted=Date.now();
+    const rows=await api('watches'); if(generation!==authGeneration)return;
+    connectedUI(true); $('token').value=''; renderWatches(rows,readStarted); notice('');
+    await Promise.allSettled([refresh(true), api('threads').then(async data=>{if(generation!==authGeneration)return;threads=data;const started=Date.now();const watches=await api('watches');if(generation===authGeneration)renderWatches(watches,started);})]);
+  } catch(e) { if(generation===authGeneration){$('login-error').textContent=e.message; connectedUI(false);} }
+  finally { if(generation===authGeneration)busy(button,false,'连接'); }
 }
 function selectedId() { return $('thread-id').value.trim().toLowerCase(); }
 function updateSelection() {
@@ -251,25 +335,28 @@ async function startTask(event) {
   event.preventDefault();
   if(!checked || checked.threadId!==selectedId() || !canEnroll(checked) || starting) return;
   starting=true; busy($('start-button'),true,'正在开启…'); $('action-error').textContent='';
+  const generation=authGeneration;
   const data={threadId:checked.threadId,maxResumes:Number($('max-resumes').value),confirmed:$('confirm-start').checked};
   if($('limit-id').value.trim()) data.limitId=$('limit-id').value.trim();
   try {
-    const result=await api('start',data); $('task-dialog').close();
+    const result=await mutate('start',data); if(generation!==authGeneration)return; $('task-dialog').close();
     notice(`任务已提交监控，当前状态：${(states[result.status]||['待确认'])[0]}。请以下方监控记录为准。`); await refresh();
   } catch(e) {
+    if(generation!==authGeneration)return;
     $('action-error').textContent=e.message;
     // An uncertain HTTP outcome must never encourage a blind resubmit.
     checked=null; $('start-form').hidden=true; $('check-result').hidden=true;
     notice('开启结果需检查。请先刷新监控记录，再决定是否重新检查任务。',true); await refresh();
-  } finally { starting=false; busy($('start-button'),false,'加入托管'); }
+  } finally { starting=false; busy($('start-button'),false,'加入托管');renderMutation(); }
 }
-function openStop(row) { selectedStop=row.thread_id; $('stop-task').textContent=titleFor(row.thread_id); $('stop-error').textContent=''; $('stop-dialog').showModal(); }
+function openStop(row) { selectedStop=row.thread_id; $('stop-task').textContent=titleFor(row.thread_id); $('stop-error').textContent=''; $('stop-dialog').showModal();renderMutation(); }
 async function stopTask() {
   if(!selectedStop) return;
+  const generation=authGeneration, target=selectedStop;
   busy($('confirm-stop'),true,'正在停止…');
-  try { await api('stop',{threadId:selectedStop}); $('stop-dialog').close(); notice('已停止后续自动续跑。正在执行的 Codex 任务不受影响。'); await refresh(); }
-  catch(e) { $('stop-error').textContent=e.message; }
-  finally { busy($('confirm-stop'),false,'停止监控'); }
+  try { await mutate('stop',{threadId:target}); if(generation!==authGeneration)return; $('stop-dialog').close(); notice('已停止后续自动续跑。正在执行的 Codex 任务不受影响。'); await refresh(); }
+  catch(e) { if(generation===authGeneration){$('stop-error').textContent=e.message;notice('停止结果需检查。请刷新记录并人工核对；不会自动重试。',true);} }
+  finally { busy($('confirm-stop'),false,'停止监控');renderMutation(); }
 }
 for (const dialog of [$('task-dialog'), $('stop-dialog')]) {
   dialog.addEventListener('keydown', event=>{
@@ -293,3 +380,9 @@ $('access-mode').textContent=location.protocol==='https:' ? `HTTPS 加密连接 
 setInterval(()=>refresh(),15000); setInterval(clocks,1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden) refresh(true);});
 if(token) login();
+
+$('confirm-mutation-review').addEventListener('change',renderMutation);
+$('acknowledge-mutation').addEventListener('click',acknowledgeMutation);
+$('refresh-mutation').addEventListener('click',()=>refresh());
+window.addEventListener('storage',event=>{if(event.key===MUTATION_KEY || event.key===null){$('confirm-mutation-review').checked=false;renderMutation();}});
+renderMutation();

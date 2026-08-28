@@ -126,6 +126,8 @@ class Backend:
 class CompanionServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    max_workers = 16
+    handshake_timeout = 5
 
     def __init__(self, address, backend, token=None, secure=False, public_origin=None, mini_app_id=None):
         if mini_app_id is not None and not re.fullmatch(r'wx[0-9a-f]{16}', mini_app_id):
@@ -144,10 +146,35 @@ class CompanionServer(ThreadingHTTPServer):
         self.backend = backend
         self.token = token or secrets.token_urlsafe(32)
         self.secure = secure
+        self.tls_context = None
+        self.worker_slots = threading.BoundedSemaphore(self.max_workers)
         super().__init__(address, Handler)
         host, port = self.server_address[:2]
         self.authority = authority or f'{host}:{port}'
         self.origin = f'{"https" if secure else "http"}://{self.authority}'
+
+    def process_request(self, request, client_address):
+        # Never queue an unlimited number of sockets/threads. Handshake and HTTP
+        # readers consume the same bounded pool; the accept loop never waits.
+        if not self.worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            if self.tls_context:
+                request.settimeout(self.handshake_timeout)
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            super().process_request_thread(request, client_address)
+        except (OSError, ssl.SSLError):
+            self.shutdown_request(request)
+        finally:
+            self.worker_slots.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -277,7 +304,9 @@ def serve(args):
                          public_origin=getattr(args, 'public_origin', None),
                          mini_app_id=getattr(args, 'mini_app_id', None)) as server:
         if context:
-            server.socket = context.wrap_socket(server.socket, server_side=True)
+            # A TLS-wrapped listening socket handshakes inside accept(), allowing
+            # one idle peer to block every other client before Handler's timeout.
+            server.tls_context = context
         print(f'控制台地址：{server.origin}/', flush=True)
         print(f'连接凭据：{server.token}', flush=True)
         print('仅向你自己的设备提供凭据。服务重启后凭据失效；网页关闭不会停止监控。', flush=True)

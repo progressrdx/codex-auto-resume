@@ -2,6 +2,8 @@
 import http.client
 import json
 import shutil
+import socket
+import time
 import ssl
 import subprocess
 from pathlib import Path
@@ -203,6 +205,32 @@ class HTTPSTests(unittest.TestCase):
                              public_origin='https://relay.example:8765') as server:
             self.assertEqual(server.authority,'relay.example:8765')
             self.assertEqual(server.origin,'https://relay.example:8765')
+    def test_worker_pool_rejects_excess_connections_and_releases_slots(self):
+        server=CompanionServer(('127.0.0.1',0),FakeBackend(),token='pool-test')
+        # Use one worker to exercise the same bounded admission path without
+        # opening dozens of sockets. No account, TLS trust, or network changes.
+        server.worker_slots=threading.BoundedSemaphore(1)
+        entered=threading.Event();release=threading.Event()
+        class SlowHandler:
+            def __init__(self,*args): entered.set();release.wait(2)
+        server.RequestHandlerClass=SlowHandler
+        worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+        first=socket.create_connection(server.server_address,timeout=1)
+        try:
+            self.assertTrue(entered.wait(1))
+            rejected=socket.create_connection(server.server_address,timeout=1)
+            try:self.assertEqual(rejected.recv(1),b'')
+            finally:rejected.close()
+            release.set()
+            deadline=time.monotonic()+1
+            while time.monotonic()<deadline:
+                if server.worker_slots.acquire(blocking=False):
+                    server.worker_slots.release();break
+                time.sleep(.01)
+            else:self.fail('worker slot leaked after request completion')
+        finally:
+            release.set();first.close();server.shutdown();server.server_close();worker.join()
+
     @unittest.skipUnless(shutil.which('openssl'), 'optional local TLS test requires openssl')
     def test_tls_with_explicit_certificate_trust_and_authentication(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -219,10 +247,23 @@ class HTTPSTests(unittest.TestCase):
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(cert,key)
             server = CompanionServer(('127.0.0.1',0),FakeBackend(),token='tls-test',secure=True)
-            server.socket = context.wrap_socket(server.socket,server_side=True)
+            server.tls_context = context
+            server.handshake_timeout = .2
             worker=threading.Thread(target=server.serve_forever,daemon=True); worker.start()
             try:
                 client_context=ssl.create_default_context(cafile=str(cert))
+                # Idle unauthenticated TLS peer must not block the main accept
+                # loop. Both this stalled connection and valid request stay local.
+                stalled = socket.create_connection(server.server_address, timeout=1)
+                try:
+                    client=http.client.HTTPSConnection(*server.server_address,context=client_context,timeout=1)
+                    client.request('GET','/api/watches',headers={'X-Resume-Token':'tls-test'})
+                    response=client.getresponse();self.assertEqual(response.status,200)
+                    response.read();client.close()
+                    stalled.settimeout(1)
+                    self.assertEqual(stalled.recv(1),b'')
+                finally:
+                    stalled.close()
                 for headers, expected in [({},401),({'X-Resume-Token':'tls-test'},200)]:
                     client=http.client.HTTPSConnection(*server.server_address,context=client_context,timeout=3)
                     client.request('GET','/api/watches',headers=headers)
