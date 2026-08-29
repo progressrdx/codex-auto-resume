@@ -5,13 +5,10 @@ __pycache__/
 .build/
 dist/
 
-miniprogram/project.private.config.json
-node_modules/
-
 # Local development notes and real-account validation evidence never ship.
 .light-dev/
+node_modules/
 tests/evidence/*
-!tests/evidence/README.md
 *.log
 .env
 .env.*

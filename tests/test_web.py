@@ -1,13 +1,9 @@
 """HTTP boundary tests use a fake backend, never a real account or business task."""
 import http.client
 import json
-import shutil
 import socket
 import time
-import ssl
-import subprocess
 from pathlib import Path
-import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -76,37 +72,6 @@ class HTTPTests(unittest.TestCase):
         code, _, _ = self.request('POST','/api/start',json.dumps(body),{'Content-Type':'application/json','Origin':self.server.origin})
         self.assertEqual(code,200)
         self.assertEqual(self.backend.calls,[('start',body)])
-    def test_miniprogram_referer_works_without_opening_cross_origin_access(self):
-        code, _, _ = self.request('GET','/api/watches',headers={
-            'Referer':'https://servicewechat.com/test-app/devtools/page-frame.html'})
-        self.assertEqual(code,200)
-        self.assertEqual(self.request('GET','/api/watches',headers={
-            'Referer':'https://servicewechat.com/test-app/devtools/page-frame.html',
-            'Origin':'https://untrusted.example'})[0],403)
-    def test_explicit_miniprogram_fetch_metadata_exception_remains_authenticated_and_scoped(self):
-        appid='wx14176cf92cfb62b9'
-        headers={'Referer':f'https://servicewechat.com/{appid}/devtools/page-frame.html',
-                 'Sec-Fetch-Site':'cross-site'}
-        self.assertEqual(self.request('GET','/api/watches',headers=headers)[0],403)
-        self.server.mini_app_id=appid
-        try:
-            self.assertEqual(self.request('GET','/api/watches',headers=headers)[0],200)
-            self.assertEqual(self.request('GET','/api/watches',headers=dict(headers,**{'Sec-Fetch-Site':'same-site'}))[0],200)
-            self.assertEqual(self.request('GET','/api/watches',headers=headers,auth=False)[0],401)
-            for bad in [dict(headers,Origin='https://servicewechat.com'),
-                        dict(headers,Referer='https://servicewechat.com/wx0000000000000000/devtools/page-frame.html'),
-                        dict(headers,Referer=headers['Referer']+'?x=1'),
-                        dict(headers,Host='other.example')]:
-                self.assertEqual(self.request('GET','/api/watches',headers=bad)[0],403)
-            self.assertEqual(self.request('GET','/',headers=headers)[0],403)
-            headers['Content-Type']='application/json'
-            body={'threadId':THREAD,'confirmed':True,'maxResumes':1}
-            code, response_headers, _ = self.request('POST','/api/start',json.dumps(body),headers)
-            self.assertEqual(code,200)
-            self.assertEqual(self.backend.calls,[('start',body)])
-            self.assertNotIn('Access-Control-Allow-Origin',response_headers)
-        finally:
-            self.server.mini_app_id=None
     def test_get_cannot_start_and_unknown_paths_do_not_escape_static_root(self):
         for path in ['/api/start','/../web.py','/%2e%2e/web.py','/app.js?secret=123']:
             self.assertEqual(self.request('GET',path)[0],404)
@@ -127,11 +92,10 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(code,500)
         self.assertNotIn(b'private auth dump',body)
         self.assertNotIn('Access-Control-Allow-Origin',headers)
-    def test_assets_served_and_manifest_is_valid(self):
-        for path in ['/app.js','/style.css','/icon.svg','/manifest.webmanifest']:
+    def test_assets_are_served(self):
+        for path in ['/app.js','/style.css','/icon.svg']:
             code, _, body=self.request('GET',path,auth=False)
             self.assertEqual(code,200)
-            if 'manifest' in path: self.assertEqual(json.loads(body)['start_url'],'/')
 
 
 class BackendTests(unittest.TestCase):
@@ -184,27 +148,18 @@ class BackendTests(unittest.TestCase):
         with patch('codex_resume.web.subprocess.run',side_effect=subprocess.TimeoutExpired('test',65)) as run:
             with self.assertRaises(APIError): self.backend.command('start',THREAD)
             self.assertEqual(run.call_count,1)
-    def test_http_over_lan_and_wildcard_bind_rejected_before_listening(self):
-        for host in ['0.0.0.0','192.168.1.20','::1','some-domain.test']:
-            args=SimpleNamespace(host=host,port=0,certfile=None,keyfile=None)
-            with patch('codex_resume.web.CompanionServer') as server:
-                with self.subTest(host=host),self.assertRaises(RuntimeError): serve(args)
-                server.assert_not_called()
+    def test_serve_always_binds_loopback(self):
+        args=SimpleNamespace(port=0,home=Path('/tmp/home'),app=Path('/tmp/app'),state_dir=Path('/tmp/state'))
+        with patch('codex_resume.web.CompanionServer') as companion:
+            server=companion.return_value.__enter__.return_value
+            server.origin='http://127.0.0.1:1234'
+            server.token='test-token'
+            server.serve_forever.side_effect=KeyboardInterrupt
+            serve(args)
+        self.assertEqual(companion.call_args.args[0],('127.0.0.1',0))
 
 
-class HTTPSTests(unittest.TestCase):
-    def test_public_origin_is_explicit_https_only_without_path_or_credentials(self):
-        for value in ['http://relay.example','https://relay.example/','https://user@relay.example',
-                      'https://relay.example?x=y','https://*.example','https://relay..example',
-                      'https://-relay.example','https://relay.example:0','https://relay.example:99999']:
-            with self.subTest(value=value),self.assertRaises(RuntimeError):
-                CompanionServer(('127.0.0.1',0),FakeBackend(),secure=True,public_origin=value)
-        with self.assertRaises(RuntimeError):
-            CompanionServer(('127.0.0.1',0),FakeBackend(),public_origin='https://relay.example')
-        with CompanionServer(('127.0.0.1',0),FakeBackend(),secure=True,
-                             public_origin='https://relay.example:8765') as server:
-            self.assertEqual(server.authority,'relay.example:8765')
-            self.assertEqual(server.origin,'https://relay.example:8765')
+class ServerLimitTests(unittest.TestCase):
     def test_worker_pool_rejects_excess_connections_and_releases_slots(self):
         server=CompanionServer(('127.0.0.1',0),FakeBackend(),token='pool-test')
         # Use one worker to exercise the same bounded admission path without
@@ -230,59 +185,5 @@ class HTTPSTests(unittest.TestCase):
             else:self.fail('worker slot leaked after request completion')
         finally:
             release.set();first.close();server.shutdown();server.server_close();worker.join()
-
-    @unittest.skipUnless(shutil.which('openssl'), 'optional local TLS test requires openssl')
-    def test_tls_with_explicit_certificate_trust_and_authentication(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            config = root / 'openssl.cnf'
-            config.write_text('[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ext\n'
-                              '[dn]\nCN=127.0.0.1\n[ext]\nsubjectAltName=IP:127.0.0.1\n'
-                              'basicConstraints=critical,CA:TRUE\n')
-            cert, key = root / 'cert.pem', root / 'key.pem'
-            subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes',
-                            '-days','1','-keyout',str(key),'-out',str(cert),'-config',str(config)],
-                           check=True, capture_output=True, timeout=20)
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
-            context.load_cert_chain(cert,key)
-            server = CompanionServer(('127.0.0.1',0),FakeBackend(),token='tls-test',secure=True)
-            server.tls_context = context
-            server.handshake_timeout = .2
-            worker=threading.Thread(target=server.serve_forever,daemon=True); worker.start()
-            try:
-                client_context=ssl.create_default_context(cafile=str(cert))
-                # Idle unauthenticated TLS peer must not block the main accept
-                # loop. Both this stalled connection and valid request stay local.
-                stalled = socket.create_connection(server.server_address, timeout=1)
-                try:
-                    client=http.client.HTTPSConnection(*server.server_address,context=client_context,timeout=1)
-                    client.request('GET','/api/watches',headers={'X-Resume-Token':'tls-test'})
-                    response=client.getresponse();self.assertEqual(response.status,200)
-                    response.read();client.close()
-                    stalled.settimeout(1)
-                    self.assertEqual(stalled.recv(1),b'')
-                finally:
-                    stalled.close()
-                for headers, expected in [({},401),({'X-Resume-Token':'tls-test'},200)]:
-                    client=http.client.HTTPSConnection(*server.server_address,context=client_context,timeout=3)
-                    client.request('GET','/api/watches',headers=headers)
-                    response=client.getresponse()
-                    self.assertEqual(response.status,expected)
-                    response.read(); client.close()
-                # Same TLS listener with one explicitly configured external authority.
-                server.authority = 'relay.example:8765'
-                server.origin = 'https://relay.example:8765'
-                for headers, expected in [({'Host':'relay.example:8765'},200),
-                        ({'Host':'other.example:8765'},403),
-                        ({'Host':'relay.example:8765','Origin':'https://other.example'},403)]:
-                    headers['X-Resume-Token']='tls-test'
-                    client=http.client.HTTPSConnection(*server.server_address,context=client_context,timeout=3)
-                    client.request('GET','/api/watches',headers=headers)
-                    response=client.getresponse(); self.assertEqual(response.status,expected)
-                    response.read(); client.close()
-            finally:
-                server.shutdown(); server.server_close(); worker.join()
-
 
 if __name__=='__main__': unittest.main()

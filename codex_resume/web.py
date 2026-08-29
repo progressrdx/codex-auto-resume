@@ -1,12 +1,9 @@
 """Small authenticated companion UI. No shell commands or App RPC exposed over HTTP."""
-import ipaddress
 import json
-import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
 import socket
-import ssl
 import subprocess
 import sys
 import threading
@@ -18,8 +15,7 @@ STATIC = Path(__file__).with_name('static')
 ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
           '/style.css': ('style.css', 'text/css; charset=utf-8'),
-          '/icon.svg': ('icon.svg', 'image/svg+xml'),
-          '/manifest.webmanifest': ('manifest.webmanifest', 'application/manifest+json')}
+          '/icon.svg': ('icon.svg', 'image/svg+xml')}
 
 
 class APIError(Exception):
@@ -127,31 +123,14 @@ class CompanionServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
     max_workers = 16
-    handshake_timeout = 5
-
-    def __init__(self, address, backend, token=None, secure=False, public_origin=None, mini_app_id=None):
-        if mini_app_id is not None and not re.fullmatch(r'wx[0-9a-f]{16}', mini_app_id):
-            raise RuntimeError('--mini-app-id 必须是明确的微信小程序 AppID。')
-        self.mini_app_id = mini_app_id
-        authority = None
-        if public_origin is not None:
-            # A single explicit HTTPS authority, never wildcard Host acceptance.
-            match = re.fullmatch(r'https://([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?', public_origin)
-            if (not secure or not match or '..' in match[1]
-                    or any(not label or len(label) > 63 or label.startswith('-') or label.endswith('-')
-                           for label in match[1].split('.'))
-                    or (match[2] and not 1 <= int(match[2]) <= 65535)):
-                raise RuntimeError('--public-origin 必须是单一 HTTPS 来源（域名和可选端口），且服务必须启用 TLS。')
-            authority = public_origin[len('https://'):]
+    def __init__(self, address, backend, token=None):
         self.backend = backend
         self.token = token or secrets.token_urlsafe(32)
-        self.secure = secure
-        self.tls_context = None
         self.worker_slots = threading.BoundedSemaphore(self.max_workers)
         super().__init__(address, Handler)
         host, port = self.server_address[:2]
-        self.authority = authority or f'{host}:{port}'
-        self.origin = f'{"https" if secure else "http"}://{self.authority}'
+        self.authority = f'{host}:{port}'
+        self.origin = f'http://{self.authority}'
 
     def process_request(self, request, client_address):
         # Never queue an unlimited number of sockets/threads. Handshake and HTTP
@@ -167,11 +146,8 @@ class CompanionServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         try:
-            if self.tls_context:
-                request.settimeout(self.handshake_timeout)
-                request = self.tls_context.wrap_socket(request, server_side=True)
             super().process_request_thread(request, client_address)
-        except (OSError, ssl.SSLError):
+        except OSError:
             self.shutdown_request(request)
         finally:
             self.worker_slots.release()
@@ -217,17 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(tokens) != 1 or not secrets.compare_digest(tokens[0], self.server.token):
                 raise APIError('连接凭据无效或已过期，请重新连接。', 401)
         if self.headers.get('Sec-Fetch-Site') not in (None, 'none', 'same-origin'):
-            # wx.request in DevTools sends Fetch Metadata unlike the native client.
-            # This exception is API-only, token-authenticated, exact-AppID and without
-            # Origin. Browser cross-origin fetch still fails Origin/preflight checks.
-            referer = self.headers.get_all('Referer') or []
-            trusted_mini = (api and origin is None and self.server.mini_app_id
-                and self.headers.get_all('Sec-Fetch-Site') in (['same-site'], ['cross-site'])
-                and len(referer) == 1 and re.fullmatch(
-                    r'https://servicewechat\.com/' + self.server.mini_app_id
-                    + r'/(?:devtools|[0-9]+)/page-frame\.html', referer[0]))
-            if not trusted_mini:
-                raise APIError('请直接打开控制台，或确认已为该小程序配置 --mini-app-id。', 403)
+            raise APIError('请直接打开本机控制台。', 403)
 
     def do_GET(self):
         try:
@@ -285,28 +251,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(args):
-    try:
-        host = ipaddress.ip_address(args.host)
-    except ValueError:
-        raise RuntimeError('--host 必须是明确的本机 IPv4 地址。')
-    if host.version != 4 or host.is_unspecified or host.is_multicast:
-        raise RuntimeError('只支持绑定明确的 IPv4 地址，不支持通配地址。')
-    if bool(args.certfile) != bool(args.keyfile):
-        raise RuntimeError('HTTPS 需要同时提供 --certfile 和 --keyfile。')
-    if not host.is_loopback and not args.certfile:
-        raise RuntimeError('跨设备访问必须提供 HTTPS 证书和私钥；不会开放明文控制接口。')
-    context = None
-    if args.certfile:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(args.certfile, args.keyfile)
-    with CompanionServer((str(host), args.port), Backend(args), secure=bool(context),
-                         public_origin=getattr(args, 'public_origin', None),
-                         mini_app_id=getattr(args, 'mini_app_id', None)) as server:
-        if context:
-            # A TLS-wrapped listening socket handshakes inside accept(), allowing
-            # one idle peer to block every other client before Handler's timeout.
-            server.tls_context = context
+    with CompanionServer(('127.0.0.1', args.port), Backend(args)) as server:
         print(f'控制台地址：{server.origin}/', flush=True)
         print(f'连接凭据：{server.token}', flush=True)
         print('仅向你自己的设备提供凭据。服务重启后凭据失效；网页关闭不会停止监控。', flush=True)

@@ -1,7 +1,0 @@
-{
-  "pages": ["pages/home/home"],
-  "window": {"navigationBarTitleText": "续航", "navigationBarBackgroundColor": "#f5f7f8", "navigationBarTextStyle": "black", "backgroundColor": "#f5f7f8", "enablePullDownRefresh": true},
-  "networkTimeout": {"request": 70000},
-  "style": "v2",
-  "sitemapLocation": "sitemap.json"
-}

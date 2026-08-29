@@ -21,24 +21,16 @@ from codex_resume.tasks import list_conversations, stored_assessment, inspect_ta
 THREAD = '11111111-1111-4111-8111-111111111111'
 
 
-class PackagedLaunchTests(unittest.TestCase):
+class SourceLaunchTests(unittest.TestCase):
     def args(self):
         return SimpleNamespace(home=Path('/users/test/.codex'), app=Path('/Applications/ChatGPT.app'),
                                state_dir=Path('/users/test/.codex-auto-resume'), thread=THREAD,
                                max_resumes=3, limit_id=None)
 
-    @patch('codex_resume.__main__.sys.executable', '/bundle/backend/codex-auto-resume')
-    def test_packaged_watcher_restarts_the_frozen_executable(self):
-        command, cwd, env = watch_process_spec(self.args(), 12, frozen=True)
-        self.assertEqual(command[0], '/bundle/backend/codex-auto-resume')
-        self.assertNotIn('-m', command)
-        self.assertEqual(cwd, Path('/bundle/backend'))
-        self.assertEqual(env['PYINSTALLER_RESET_ENVIRONMENT'], '1')
-
     @patch('codex_resume.__main__.sys.executable', '/usr/bin/python3')
     def test_source_watcher_keeps_module_launch(self):
         args = self.args(); args.limit_id = 'codex'
-        command, cwd, env = watch_process_spec(args, 7, frozen=False)
+        command, cwd, env = watch_process_spec(args, 7)
         self.assertEqual(command[:3], ['/usr/bin/python3', '-m', 'codex_resume'])
         self.assertEqual(command[-2:], ['--limit-id', 'codex'])
         self.assertIsNone(env)

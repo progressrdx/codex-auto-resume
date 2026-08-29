@@ -376,7 +376,6 @@ $('start-form').addEventListener('submit',startTask);
 $('cancel-stop').addEventListener('click',()=>$('stop-dialog').close());
 $('confirm-stop').addEventListener('click',stopTask);
 $('disconnect').addEventListener('click',()=>{forget();notice('页面已断开，后台监控不受影响。');});
-$('access-mode').textContent=location.protocol==='https:' ? `HTTPS 加密连接 · ${location.host}` : `仅限本机访问 · ${location.host}`;
 setInterval(()=>refresh(),15000); setInterval(clocks,1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden) refresh(true);});
 if(token) login();

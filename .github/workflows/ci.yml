@@ -26,18 +26,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-          cache: npm
-      - name: Install locked test dependencies without lifecycle scripts
-        run: npm ci --ignore-scripts
       - name: Verify version and repository hygiene
         run: python3 scripts/verify_release.py
       - name: Python regression (isolated fake services only)
         run: python3 -m unittest discover -s tests -v
       - name: Node regression (no real App or business task)
-        run: npm test
+        run: node --test tests/test_ui.cjs
       - name: Compile Python modules
         run: python3 -m compileall -q codex_resume
       - name: Check browser JavaScript syntax
         run: node --check codex_resume/static/app.js
-      - name: Audit locked dependencies
-        run: npm audit --audit-level=high

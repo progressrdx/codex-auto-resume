@@ -3,9 +3,8 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#12695c"><meta name="color-scheme" content="light">
-  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>续航 · Codex Relay</title>
-  <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
@@ -17,9 +16,8 @@
     <nav aria-label="主导航">
       <a href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>控制台</a>
       <a href="#tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>监控任务 <span id="nav-count" class="count">0</span></a>
-      <a href="#connection"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="3"/><path d="M10 18h4"/></svg>设备连接</a>
     </nav>
-    <div class="side-bottom"><span class="pill">macOS 实验版</span><p>工作留在 Codex App。<br>续航只负责等待与继续。</p><small id="version">App 版本待检查</small></div>
+    <div class="side-bottom"><span class="pill">本地源码版</span><p>工作留在 Codex App。<br>续航只负责等待与继续。</p><small id="version">App 版本待检查</small></div>
   </aside>
   <main id="main">
     <header class="topbar"><span>本机工作站 <span class="slash">/</span> 续跑管理</span><span class="connection-state" id="connection-state">尚未连接</span></header>
@@ -51,7 +49,6 @@
         <p class="freshness" id="watch-updated">监控记录尚未读取</p>
       </section>
       <section class="how-it-works" aria-label="续跑如何工作"><div><span class="step-index">1</span><strong>识别额度失败</strong><p>正常完成或手动停止，不会续跑。</p></div><div><span class="step-index">2</span><strong>等待自然恢复</strong><p>同时检查五小时与每周额度。</p></div><div><span class="step-index">3</span><strong>在原任务继续</strong><p>保留模型设置，不跳过任何审批。</p></div></section>
-      <section id="connection" class="device-section" aria-labelledby="device-heading"><div><p class="eyebrow">ONE WORKSTATION, TWO SCREENS</p><h2 id="device-heading">电脑运行，手机查看。</h2><p>手机浏览器使用同一套控制台。Codex App 和本机服务需要保持运行；关闭网页不会停止后台监控。</p><p class="meta" id="access-mode">当前服务地址待确认</p></div><details><summary>如何在手机上连接</summary><p>首版本机地址无法直接从手机访问。请在可信网络内，为 Mac 的固定局域网地址配置手机信任的 HTTPS 证书，再使用服务的 <code>--host</code>、<code>--certfile</code> 与 <code>--keyfile</code> 参数启动。</p><p>手机打开该 HTTPS 地址并输入连接凭据。可使用浏览器“添加到主屏幕”；这不是原生 App，也不会在手机后台执行 Codex。不要开启公网端口映射或转发连接凭据。</p></details></section>
       <footer><span>续航 · 小而专注的 Codex 配套工具</span><span>跨自然额度重置的完整流程仍待实测</span><button id="disconnect" class="text-button" hidden>断开此页面</button></footer>
     </section>
   </main>

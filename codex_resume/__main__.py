@@ -30,7 +30,7 @@ def positive(value):
 
 
 def parser():
-    p = argparse.ArgumentParser(description='Codex App 额度恢复续跑（macOS 实验版）')
+    p = argparse.ArgumentParser(description='Codex App 本地额度恢复续跑工具')
     p.add_argument('--home', type=Path, default=Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')))
     p.add_argument('--app', type=Path, default=Path('/Applications/ChatGPT.app'))
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
@@ -38,13 +38,8 @@ def parser():
     sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
     sub.add_parser('list', help='分页读取所有可用本地对话，包含归档；不会自动托管')
     sub.add_parser('status', help='查看监控记录')
-    web = sub.add_parser('web', help='启动桌面/手机浏览器控制台（默认仅本机）')
-    web.add_argument('--host', default='127.0.0.1', help='明确的本机 IPv4 地址；非回环地址必须配置 HTTPS')
+    web = sub.add_parser('web', help='启动本机浏览器控制台')
     web.add_argument('--port', type=int, default=8765)
-    web.add_argument('--certfile', type=Path)
-    web.add_argument('--keyfile', type=Path)
-    web.add_argument('--public-origin', help='启用 TLS 时指定唯一 HTTPS 访问来源，例如 https://relay.example.com:8765')
-    web.add_argument('--mini-app-id', help='仅允许这个微信 AppID 的带凭据请求通过模拟器 Fetch Metadata 检查')
     check = sub.add_parser('check', help='只读识别所选对话的任务状态与托管资格')
     check.add_argument('thread', type=identifier)
     stop = sub.add_parser('stop', help='停止后续自动续跑，不打断正在执行的 App 任务')
@@ -63,26 +58,14 @@ def output(value):
     print(json.dumps(value, ensure_ascii=False, indent=2), flush=True)
 
 
-def watch_process_spec(args, lock_fd, frozen=None):
-    """Build an independent watcher command for source and packaged launches."""
-    if frozen is None:
-        frozen = bool(getattr(sys, 'frozen', False))
-    prefix = [sys.executable] if frozen else [sys.executable, '-m', 'codex_resume']
-    cmd = prefix + ['--home', str(args.home), '--app', str(args.app),
+def watch_process_spec(args, lock_fd):
+    """Build an independent watcher command for the source checkout."""
+    cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
                     '--state-dir', str(args.state_dir), '_watch', args.thread,
                     '--max-resumes', str(args.max_resumes), '--lock-fd', str(lock_fd)]
     if args.limit_id:
         cmd += ['--limit-id', args.limit_id]
-    if frozen:
-        env = os.environ.copy()
-        # A PyInstaller child must unpack/start as a new instance, not inherit
-        # the parent's temporary runtime environment.
-        env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
-        cwd = Path(sys.executable).resolve().parent
-    else:
-        env = None
-        cwd = Path(__file__).resolve().parent.parent
-    return cmd, cwd, env
+    return cmd, Path(__file__).resolve().parent.parent, None
 
 
 def serve_watch(args, store):
