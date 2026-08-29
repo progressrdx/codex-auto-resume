@@ -37,7 +37,7 @@ When a long Codex task hits a usage limit, the work can stop even though the tas
 It does **not** switch accounts, buy credits, redeem resets, approve tool calls, create replacement conversations, or take over every unfinished task.
 
 > [!IMPORTANT]
-> This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The complete real-world cycle—usage exhaustion, natural reset, and automatic continuation—has not yet been validated end to end. See [Current validation status](#current-validation-status).
+> This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful real-account end-to-end runs across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
 
 ## Preview
 
@@ -285,6 +285,10 @@ Validated locally:
 - stale-response, stale-session, duplicate-click, and uncertain-mutation protection;
 - source launcher behavior outside the repository directory.
 
+Validated with a real account on the currently supported Codex desktop App version:
+
+- two successful end-to-end runs from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
+
 Current automated suite:
 
 ```text
@@ -293,10 +297,10 @@ Browser UI tests: 26 passed
 Runtime dependencies: 0
 ```
 
-Not yet validated:
+Remaining limitations:
 
-- a complete real-account cycle from natural usage exhaustion, across the actual reset boundary, to an automatically confirmed continuation;
 - every future Codex desktop App version and internal protocol change;
+- every account, machine, sleep/network condition, and task-state combination beyond the two completed real-world runs;
 - guaranteed completion of the user's overall task after a turn finishes.
 
 ## Troubleshooting
