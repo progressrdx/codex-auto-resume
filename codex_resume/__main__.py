@@ -63,6 +63,28 @@ def output(value):
     print(json.dumps(value, ensure_ascii=False, indent=2), flush=True)
 
 
+def watch_process_spec(args, lock_fd, frozen=None):
+    """Build an independent watcher command for source and packaged launches."""
+    if frozen is None:
+        frozen = bool(getattr(sys, 'frozen', False))
+    prefix = [sys.executable] if frozen else [sys.executable, '-m', 'codex_resume']
+    cmd = prefix + ['--home', str(args.home), '--app', str(args.app),
+                    '--state-dir', str(args.state_dir), '_watch', args.thread,
+                    '--max-resumes', str(args.max_resumes), '--lock-fd', str(lock_fd)]
+    if args.limit_id:
+        cmd += ['--limit-id', args.limit_id]
+    if frozen:
+        env = os.environ.copy()
+        # A PyInstaller child must unpack/start as a new instance, not inherit
+        # the parent's temporary runtime environment.
+        env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+        cwd = Path(sys.executable).resolve().parent
+    else:
+        env = None
+        cwd = Path(__file__).resolve().parent.parent
+    return cmd, cwd, env
+
+
 def serve_watch(args, store):
     store.lock(args.thread, inherited_fd=args.lock_fd)
     quota = None
@@ -172,15 +194,11 @@ def main(argv=None):
             # this descriptor; closing only the parent's copy cannot unlock it.
             lock_fd = store.lock_file.fileno()
             log = args.state_dir / (args.thread + '.log')
-            cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
-                   '--state-dir', str(args.state_dir), '_watch', args.thread, '--max-resumes', str(args.max_resumes),
-                   '--lock-fd', str(lock_fd)]
-            if args.limit_id:
-                cmd += ['--limit-id', args.limit_id]
+            cmd, child_cwd, child_env = watch_process_spec(args, lock_fd)
             try:
                 fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'ab') as stream:
-                    child = subprocess.Popen(cmd, cwd=Path(__file__).resolve().parent.parent,
+                    child = subprocess.Popen(cmd, cwd=child_cwd, env=child_env,
                                              stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
                                              start_new_session=True, pass_fds=(lock_fd,))
             except Exception:
@@ -204,7 +222,7 @@ def main(argv=None):
         store.close()
 
 
-if __name__ == '__main__':
+def cli():
     try:
         main()
     except KeyboardInterrupt:
@@ -218,3 +236,7 @@ if __name__ == '__main__':
         else:
             print('操作失败；请检查 App、目录权限和网络，未自动重试发送。', file=sys.stderr)
         sys.exit(1)
+
+
+if __name__ == '__main__':
+    cli()

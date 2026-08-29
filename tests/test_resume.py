@@ -8,8 +8,10 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from codex_resume.app import AppError, Desktop, MAX_FRAME, ThreadUnavailable, open_selected_thread
+from codex_resume.__main__ import watch_process_spec
 from codex_resume.controller import Controller
 from codex_resume.policy import decide, fingerprint, quota_status, latest_turn
 from codex_resume.rpc import ReadOnlyServer
@@ -17,6 +19,30 @@ from codex_resume.store import Store
 from codex_resume.tasks import list_conversations, stored_assessment, inspect_task
 
 THREAD = '11111111-1111-4111-8111-111111111111'
+
+
+class PackagedLaunchTests(unittest.TestCase):
+    def args(self):
+        return SimpleNamespace(home=Path('/users/test/.codex'), app=Path('/Applications/ChatGPT.app'),
+                               state_dir=Path('/users/test/.codex-auto-resume'), thread=THREAD,
+                               max_resumes=3, limit_id=None)
+
+    @patch('codex_resume.__main__.sys.executable', '/bundle/backend/codex-auto-resume')
+    def test_packaged_watcher_restarts_the_frozen_executable(self):
+        command, cwd, env = watch_process_spec(self.args(), 12, frozen=True)
+        self.assertEqual(command[0], '/bundle/backend/codex-auto-resume')
+        self.assertNotIn('-m', command)
+        self.assertEqual(cwd, Path('/bundle/backend'))
+        self.assertEqual(env['PYINSTALLER_RESET_ENVIRONMENT'], '1')
+
+    @patch('codex_resume.__main__.sys.executable', '/usr/bin/python3')
+    def test_source_watcher_keeps_module_launch(self):
+        args = self.args(); args.limit_id = 'codex'
+        command, cwd, env = watch_process_spec(args, 7, frozen=False)
+        self.assertEqual(command[:3], ['/usr/bin/python3', '-m', 'codex_resume'])
+        self.assertEqual(command[-2:], ['--limit-id', 'codex'])
+        self.assertIsNone(env)
+        self.assertEqual(cwd.name, 'codex-auto-resume')
 
 
 def state(status='failed', error='usageLimitExceeded', turn_id='t1'):

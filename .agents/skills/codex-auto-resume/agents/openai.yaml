@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Auto Resume"
+  short_description: "Safely monitor one selected local Codex task"
+  default_prompt: "Use $codex-auto-resume to inspect and manage one selected local Codex task."

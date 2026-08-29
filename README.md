@@ -2,11 +2,36 @@
 
 为一个明确选定的 **Codex 桌面 App 本地任务**等待额度恢复，并在原任务里启动下一轮。不创建 CLI 替代会话，不切换账号，不购买额度或使用重置券。
 
-这是独立小工具，使用 `light-dev` 的方式开发，不依赖 Project Compass。支持终端命令和适配电脑、手机浏览器的 Web 控制台；被续跑的任务仍留在 App 里。新增原生微信小程序源码（[接入与验收说明](miniprogram/README.md)），尚未完成真机验收。没有原生 iOS/Android App、安装器或开机自启。
+这是独立小工具，使用 `light-dev` 的方式开发，不依赖 Project Compass。当前首发方式是 **拉取源码后在本机手动启动**，详见 [发布计划](RELEASE_PLAN.md)：不分发需要 Apple 签名的安装包，不依赖开发者服务器、域名、云数据库或用户账户。被续跑的任务仍留在 Codex App 里；现有原生 macOS 壳和微信小程序源码仅作为后续实验保留。
 
-2026-08-29：用户 AppID 已接入，微信模拟器实际请求已验证模拟任务开启/停止及真实对话、额度、托管数据一致性；[分层验证记录](VALIDATION.md)。手机可信 HTTPS 和扫码真机仍待完成，不能将模拟器测试视为最终交付。
+2026-08-29：用户 AppID 已接入，微信模拟器实际请求已验证模拟任务开启/停止及真实对话、额度、托管数据一致性；[分层验证记录](VALIDATION.md)。这些结果保留为实验证据，但手机可信 HTTPS、扫码真机、域名和云端中继已移出 macOS 首发范围，不能将模拟器测试视为移动端最终交付。
 
 当前 **0.1.1** 已完成四路对抗审计和隔离修复回归，见 [审计报告](AUDIT.md) 与 [版本记录](CHANGELOG.md)。这不是生产安全认证。
+
+## 源码首发：三步启动
+
+需要 macOS、Python 3.9 或更高版本，以及已登录并保持打开的 Codex App。工具没有第三方 Python 运行依赖：
+
+```sh
+git clone <仓库地址>
+cd codex-auto-resume
+./resume doctor
+```
+
+随后使用 `./resume list` 查找本地对话，并用 `./resume check <任务UUID>` 只读确认一个明确任务。源码更新使用 `git pull`；预算、防重复和状态仍保存在 `~/.codex-auto-resume/`，不会因更新仓库而清空。
+
+仓库还包含 `.agents/skills/codex-auto-resume/`。从本仓库打开 Codex 后，可通过 `$codex-auto-resume` 使用这个仓库级 Skill；它只是安全地调用同一个 `./resume` 入口，真正等待额度恢复的仍是独立本地 watcher。Skill 不会自动选择任务，也不会替代用户对启动操作的明确授权。
+
+## 可选原生 macOS 实验壳
+
+原生 SwiftUI 壳不再作为首发发布物，也不阻塞源码版本。开发者仍可在本机自行构建：
+
+```sh
+./scripts/build_macos_app.sh
+open "dist/Codex Auto Resume.app"
+```
+
+这个产物目前只用于本机开发验证，采用临时签名，不应作为面向普通用户的下载包。正式二进制分发、Developer ID 与公证被移到可选后续阶段。
 
 ## 当前验证边界
 
@@ -23,7 +48,7 @@ App 内部接口会随版本变化。本工具遇到非已验证版本会停止�
 在本仓库目录运行：
 
 ```sh
-python3 -m codex_resume web
+./resume web
 ```
 
 打开终端显示的 `http://127.0.0.1:8765/`，输入该次启动生成的连接凭据。服务默认只监听本机，不需要 npm 或第三方 Python 依赖；这是同一个工具的管理界面，不是另一个 Codex 执行器。
@@ -60,9 +85,9 @@ python3 -m codex_resume web --host 192.168.1.50 --port 8765 \
 在本仓库目录执行：
 
 ```sh
-python3 -m codex_resume doctor
-python3 -m codex_resume list
-python3 -m codex_resume check 你的任务UUID
+./resume doctor
+./resume list
+./resume check 你的任务UUID
 ```
 
 `doctor` 读取真实额度，不运行模型。`list` 跟随分页游标读取所有可用的本地持久对话，并标明归档；不扫描云端 ChatGPT 对话。`check` 优先读取 App 实时状态，连接不可用时读取明确选中的对话历史。结果区分 `taskState`、`source`、`connection` 与 `canMonitor`；历史资格判断不授权发送消息。任务 UUID 不能用标题或“最近任务”代替。
@@ -76,9 +101,9 @@ App 偶尔会保留已取消的文件夹选择请求。工具仅在同一段连�
 原任务内的真实发送已验证，但自然额度重置后的自动恢复尚未验证。建议先用 `doctor` / `check`，确认接受实验风险后，仅选择一个任务受控试用：
 
 ```sh
-python3 -m codex_resume start 你的任务UUID
-python3 -m codex_resume status
-python3 -m codex_resume stop 你的任务UUID
+./resume start 你的任务UUID
+./resume status
+./resume stop 你的任务UUID
 ```
 
 `start` 在后台运行，可以关闭这个终端。默认同一任务累计最多尝试 3 次自动续跑；明确需要更多时使用 `--max-resumes 5`。次数按持久记录累计，重新启动不会清空去重记录或次数。
