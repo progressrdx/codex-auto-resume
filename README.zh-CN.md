@@ -18,6 +18,7 @@
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?logo=apple">
   <img alt="仅本机运行" src="https://img.shields.io/badge/runtime-local--only-12695c">
   <img alt="零运行依赖" src="https://img.shields.io/badge/runtime%20dependencies-0-12695c">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-12695c"></a>
 </p>
 
 <p align="center">
@@ -330,6 +331,10 @@ python3 scripts/verify_release.py
 - 🐛 提交一个带安全复现步骤的 Issue。
 - 🔗 分享给经常运行 Codex 长任务的开发者。
 - 🧪 为新的 App 版本贡献隔离兼容性测试。
+
+## 开源协议
+
+Codex Auto Resume 使用 [MIT License](LICENSE)。
 
 <p align="center">
   <strong>工作留在 Codex，等待交给本机。</strong>

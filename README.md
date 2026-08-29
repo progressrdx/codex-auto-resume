@@ -18,6 +18,7 @@
   <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?logo=apple">
   <img alt="Local only" src="https://img.shields.io/badge/runtime-local--only-12695c">
   <img alt="Zero runtime dependencies" src="https://img.shields.io/badge/runtime%20dependencies-0-12695c">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-12695c"></a>
   <a href="https://github.com/progressrdx/codex-auto-resume/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/progressrdx/codex-auto-resume?style=flat"></a>
 </p>
 
@@ -343,6 +344,10 @@ If Codex Auto Resume is useful to you:
 - 🐛 Open a focused issue with a safe reproduction.
 - 🔗 Share the project with developers who run long Codex tasks.
 - 🧪 Contribute isolated compatibility tests for new App versions.
+
+## License
+
+Codex Auto Resume is available under the [MIT License](LICENSE).
 
 <p align="center">
   <strong>Keep the work in Codex. Let the waiting happen locally.</strong>
