@@ -3,7 +3,7 @@ import socket
 import time
 import uuid
 
-from .app import ConnectionUnavailable, Desktop
+from .app import ConnectionUnavailable, Desktop, open_selected_thread
 from .policy import decide, interrupted_context_picker, quota_failure
 from .rpc import ReadOnlyServer
 
@@ -75,6 +75,22 @@ def stored_assessment(thread, thread_id):
     return result
 
 
+def live_assessment(home, app_path, thread_id):
+    with Desktop(home, app_path) as desktop:
+        state = desktop.snapshot(thread_id)
+    decision = decide(state)
+    if decision.task_state == 'connecting':
+        return None
+    return {'threadId': thread_id, 'title': state.get('title'),
+            'decision': decision.action, 'reason': decision.reason,
+            'taskState': decision.task_state,
+            'canMonitor': decision.task_state in ('running', 'quota_limited'),
+            'source': 'live', 'connection': 'connected', 'checkedAt': time.time(),
+            'runtime': state.get('threadRuntimeStatus'), 'model': state.get('latestModel'),
+            'ignoredInterruptedPickerRequests': sum(interrupted_context_picker(state, r)
+                for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
+
+
 def inspect_task(home, app_path, thread_id):
     thread_id = str(uuid.UUID(thread_id))
     # Archiving is a user stop signal, even if the last persisted turn was still
@@ -87,18 +103,21 @@ def inspect_task(home, app_path, thread_id):
                 'source': 'history', 'connection': 'not_checked', 'checkedAt': time.time(),
                 'reason': '这个对话已归档，不会加入托管或自动打开'}
     try:
-        with Desktop(home, app_path) as desktop:
-            state = desktop.snapshot(thread_id)
-        decision = decide(state)
-        if decision.task_state != 'connecting':
-            return {'threadId': thread_id, 'title': state.get('title'),
-                    'decision': decision.action, 'reason': decision.reason,
-                    'taskState': decision.task_state,
-                    'canMonitor': decision.task_state in ('running', 'quota_limited'),
-                    'source': 'live', 'connection': 'connected', 'checkedAt': time.time(),
-                    'runtime': state.get('threadRuntimeStatus'), 'model': state.get('latestModel'),
-                    'ignoredInterruptedPickerRequests': sum(interrupted_context_picker(state, r)
-                        for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
+        result = live_assessment(home, app_path, thread_id)
+        if result is not None:
+            return result
+    except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
+        pass
+    try:
+        # A selected thread can be active in the App while the read-only index
+        # still reports it as notLoaded and the persisted turn tail is stale.
+        # Opening the exact UUID is navigation only; a fresh snapshot is still
+        # required before enrollment and history is never used to dispatch.
+        open_selected_thread(app_path, thread_id)
+        time.sleep(1)
+        result = live_assessment(home, app_path, thread_id)
+        if result is not None:
+            return dict(result, openedSelectedThread=True)
     except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
         pass
     with ReadOnlyServer(app_path / 'Contents/Resources/codex', home) as server:

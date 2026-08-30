@@ -8,7 +8,7 @@ from .policy import decide, fingerprint, quota_status
 
 class Controller:
     def __init__(self, thread_id, store, desktop_factory, quota_reader, limit_id=None, clock=time.time,
-                 open_thread=None):
+                 open_thread=None, notify=None):
         self.thread_id, self.store = thread_id, store
         self.desktop_factory, self.quota_reader = desktop_factory, quota_reader
         self.limit_id, self.clock = limit_id, clock
@@ -17,6 +17,7 @@ class Controller:
         self.failures = 0
         self.open_thread = open_thread
         self.next_open = 0
+        self.notify = notify or (lambda _status, _reason: None)
 
     def step(self):
         watch = self.store.get(self.thread_id)
@@ -107,4 +108,6 @@ class Controller:
 
     def end(self, status, reason):
         self.store.update(self.thread_id, status, reason, True, only_enabled=True)
+        if status not in ('stopped', 'budget'):
+            self.notify(status, reason)
         return False
