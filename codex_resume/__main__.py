@@ -68,6 +68,21 @@ def watch_process_spec(args, lock_fd):
     return cmd, Path(__file__).resolve().parent.parent, None
 
 
+def notify_user(thread_id, status, reason):
+    title = 'Codex Auto Resume 需要确认'
+    body = f'{status}: {reason} ({thread_id})'
+    try:
+        subprocess.run(['/usr/bin/osascript',
+                        '-e', 'on run argv',
+                        '-e', 'display notification (item 2 of argv) with title (item 1 of argv)',
+                        '-e', 'end run',
+                        title, body],
+                       check=False, timeout=5, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def serve_watch(args, store):
     store.lock(args.thread, inherited_fd=args.lock_fd)
     quota = None
@@ -95,7 +110,8 @@ def serve_watch(args, store):
             return False
         open_selected_thread(args.app, tid)
     controller = Controller(args.thread, store, lambda: Desktop(args.home, args.app), read_quota, args.limit_id,
-                            open_thread=load_original)
+                            open_thread=load_original,
+                            notify=lambda status, reason: notify_user(args.thread, status, reason))
     previous = None
     try:
         while controller.step():
