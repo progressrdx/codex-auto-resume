@@ -1,11 +1,11 @@
 # 版本记录
 
-## 0.3.0 — Windows 预览适配（未发布）
+## 0.3.0 — Windows 适配（未发布）
 
 - 新增 Windows 命名管道 IPC、Windows 文件锁和后台 watcher 启动支持。
 - 新增 `resume.cmd` 与 `resume.ps1`，支持在 PowerShell 或命令提示符中直接启动。
 - 自动定位 Windows Codex App 复制到用户目录的 `codex.exe`，并核验 Store/MSIX App 与 CLI 版本。
-- 保留精确版本保护；Windows 自动化路径已隔离测试，真实 Windows 自然额度重置周期仍待验证。
+- 保留精确版本保护；Windows 自动化路径已通过隔离测试，并在 Windows 11 实机、ChatGPT 免费账号上完成一次真实自然额度重置后的原任务自动续跑验证。
 
 ## 0.2.0 — 源码精简版（2026-08-29）
 

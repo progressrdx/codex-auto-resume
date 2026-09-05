@@ -37,7 +37,7 @@ When a long Codex task hits a usage limit, the work can stop even though the tas
 It does **not** switch accounts, buy credits, redeem resets, approve tool calls, create replacement conversations, or take over every unfinished task.
 
 > [!IMPORTANT]
-> This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful real-account end-to-end runs across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
+> This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful macOS runs and one successful Windows 11 run across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
 
 ## Preview
 
@@ -61,14 +61,14 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 
 ### Requirements
 
-- macOS, or Windows 11 (Windows support is currently a preview)
+- macOS, or Windows 11
 - Python 3.9 or newer
 - The Codex desktop app installed, signed in, and kept open
 - Verified macOS App version: `26.820.60940 / build 7119`
 - Currently adapted Windows versions: App `26.901.31953.0`, CLI `0.153.1`
 - Default path: macOS `/Applications/ChatGPT.app`; Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
 
-Run the Windows preview from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
+Run the Windows version from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
 
 Unsupported App versions are rejected instead of silently using an unverified internal protocol.
 
@@ -318,6 +318,10 @@ Validated with a real account on the currently supported macOS Codex desktop App
 
 - two successful end-to-end runs from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
 
+Validated on a real Windows 11 machine with the Codex desktop App signed in to a ChatGPT Free account:
+
+- one successful end-to-end run from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
+
 Current automated suite:
 
 ```text
@@ -329,8 +333,8 @@ Runtime dependencies: 0
 Remaining limitations:
 
 - every future Codex desktop App version and internal protocol change;
-- every account, machine, sleep/network condition, and task-state combination beyond the two completed real-world runs;
-- the full Windows cycle from real usage exhaustion through natural reset and automatic continuation; Windows is therefore marked preview;
+- every account, machine, sleep/network condition, and task-state combination beyond the three completed real-world runs;
+- plan-specific combinations not yet repeated: the Windows run used ChatGPT Free, while the existing paid-plan reset runs were completed on macOS; the controller follows the reset metadata returned by the signed-in account rather than hard-coding a plan duration;
 - guaranteed completion of the user's overall task after a turn finishes.
 
 ## Troubleshooting
