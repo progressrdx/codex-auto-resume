@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
 Set-Location -LiteralPath $PSScriptRoot
 
 $launcher = Get-Command py -ErrorAction SilentlyContinue

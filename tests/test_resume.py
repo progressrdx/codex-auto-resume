@@ -41,7 +41,8 @@ class SourceLaunchTests(unittest.TestCase):
     @patch.dict(os.environ, {'LOCALAPPDATA': r'C:\Users\test\AppData\Local'})
     def test_windows_defaults_to_relocated_bundled_cli(self):
         path = default_app_path('windows')
-        self.assertEqual(str(path), r'C:\Users\test\AppData\Local/OpenAI/Codex/bin/codex.exe')
+        self.assertEqual(str(path).replace('\\', '/'),
+                         'C:/Users/test/AppData/Local/OpenAI/Codex/bin/codex.exe')
         self.assertEqual(codex_binary(path, 'windows'), path)
 
     def test_windows_watcher_does_not_receive_posix_descriptor(self):
@@ -328,7 +329,7 @@ class TaskDiscoveryTests(unittest.TestCase):
     @patch('codex_resume.app.subprocess.run')
     @patch('codex_resume.app.check_version')
     def test_navigation_only_uses_validated_original_uuid_without_prompt(self, version, run):
-        open_selected_thread('/Applications/Test.app', THREAD)
+        open_selected_thread('/Applications/Test.app', THREAD, system='macos')
         self.assertEqual(run.call_args.args[0], ['/usr/bin/open','-g','-a',
             '/Applications/Test.app','codex://threads/'+THREAD])
         run.reset_mock()

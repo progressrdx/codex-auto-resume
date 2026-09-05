@@ -31,14 +31,14 @@ class SourceReleaseTests(unittest.TestCase):
         metadata = ROOT / '.agents/skills/codex-auto-resume/agents/openai.yaml'
         self.assertTrue(skill.is_file())
         self.assertTrue(metadata.is_file())
-        content = skill.read_text()
+        content = skill.read_text(encoding='utf-8')
         self.assertTrue(content.startswith('---\nname: codex-auto-resume\n'))
         self.assertIn('`./resume`', content)
         self.assertTrue(os.access(ROOT / 'resume', os.X_OK))
 
     def test_windows_launchers_are_dependency_free_and_keep_arguments(self):
-        cmd = (ROOT / 'resume.cmd').read_text()
-        powershell = (ROOT / 'resume.ps1').read_text()
+        cmd = (ROOT / 'resume.cmd').read_text(encoding='utf-8')
+        powershell = (ROOT / 'resume.ps1').read_text(encoding='utf-8')
         self.assertIn('-m codex_resume %*', cmd)
         self.assertIn('-m codex_resume @args', powershell)
         self.assertNotIn('pip install', cmd + powershell)
