@@ -11,6 +11,7 @@ from .app import Desktop, check_version, open_selected_thread
 from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
+from .runtime import codex_binary, default_app_path, platform_name, process_exists
 from .store import Store
 from .tasks import inspect_task, list_conversations, stored_assessment
 
@@ -32,7 +33,8 @@ def positive(value):
 def parser():
     p = argparse.ArgumentParser(description='Codex App 本地额度恢复续跑工具')
     p.add_argument('--home', type=Path, default=Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')))
-    p.add_argument('--app', type=Path, default=Path('/Applications/ChatGPT.app'))
+    p.add_argument('--app', type=Path, default=default_app_path(),
+                   help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径')
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     sub = p.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
@@ -58,23 +60,35 @@ def output(value):
     print(json.dumps(value, ensure_ascii=False, indent=2), flush=True)
 
 
-def watch_process_spec(args, lock_fd):
+def watch_process_spec(args, lock_fd=None):
     """Build an independent watcher command for the source checkout."""
     cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
                     '--state-dir', str(args.state_dir), '_watch', args.thread,
-                    '--max-resumes', str(args.max_resumes), '--lock-fd', str(lock_fd)]
+                    '--max-resumes', str(args.max_resumes)]
+    if lock_fd is not None:
+        cmd += ['--lock-fd', str(lock_fd)]
     if args.limit_id:
         cmd += ['--limit-id', args.limit_id]
     return cmd, Path(__file__).resolve().parent.parent, None
 
 
 def serve_watch(args, store):
-    store.lock(args.thread, inherited_fd=args.lock_fd)
+    if platform_name() == 'windows' and args.lock_fd is None:
+        for attempt in range(50):
+            try:
+                store.lock(args.thread)
+                break
+            except RuntimeError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.1)
+    else:
+        store.lock(args.thread, inherited_fd=args.lock_fd)
     quota = None
     def read_quota():
         nonlocal quota
         if quota is None:
-            reader = ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home)
+            reader = ReadOnlyServer(codex_binary(args.app), args.home)
             reader.__enter__()
             quota = reader
         try:
@@ -85,7 +99,7 @@ def serve_watch(args, store):
             raise
     def load_original(tid):
         # Revalidate eligibility before navigation as well as before dispatch.
-        with ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home) as reader:
+        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
                 return False
             saved = reader.query('thread/read', {'threadId': tid, 'includeTurns': True})
@@ -130,7 +144,7 @@ def main(argv=None):
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
     if args.command in ('doctor', 'list'):
-        with ReadOnlyServer(args.app / 'Contents/Resources/codex', args.home) as server:
+        with ReadOnlyServer(codex_binary(args.app), args.home) as server:
             if args.command == 'list':
                 output(list_conversations(server))
                 return
@@ -150,12 +164,8 @@ def main(argv=None):
             for row in rows:
                 row['attempts'] = store.count(row['thread_id'])
                 if row.get('pid') and row['enabled']:
-                    try:
-                        os.kill(row['pid'], 0)
-                    except ProcessLookupError:
-                        row['process'] = 'not_running'
-                    else:
-                        row['process'] = 'pid_exists_not_identity_verified'
+                    row['process'] = ('pid_exists_not_identity_verified' if process_exists(row['pid'])
+                                      else 'not_running')
             output(rows)
         elif args.command == 'stop':
             store.stop(args.thread)
@@ -172,18 +182,35 @@ def main(argv=None):
             if store.count(args.thread) >= args.max_resumes:
                 raise RuntimeError('累计尝试次数已达到上限；检查记录后再决定是否提高 --max-resumes')
             store.lock(args.thread)
+            current = store.get(args.thread)
+            if current and current['enabled']:
+                raise RuntimeError('该任务已有一个监控进程或待确认的启动记录')
             store.arm(args.thread, args.max_resumes)
             # Keep the same flock held across process creation. The child adopts
             # this descriptor; closing only the parent's copy cannot unlock it.
-            lock_fd = store.lock_file.fileno()
+            windows = platform_name() == 'windows'
+            lock_fd = None if windows else store.lock_file.fileno()
             log = args.state_dir / (args.thread + '.log')
             cmd, child_cwd, child_env = watch_process_spec(args, lock_fd)
             try:
-                fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                if log.is_symlink():
+                    raise RuntimeError('拒绝使用符号链接日志文件')
+                flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
+                fd = os.open(log, flags, 0o600)
                 with os.fdopen(fd, 'ab') as stream:
-                    child = subprocess.Popen(cmd, cwd=child_cwd, env=child_env,
-                                             stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,
-                                             start_new_session=True, pass_fds=(lock_fd,))
+                    options = dict(cwd=child_cwd, env=child_env, stdin=subprocess.DEVNULL,
+                                   stdout=stream, stderr=stream, start_new_session=True)
+                    if windows:
+                        options.pop('start_new_session')
+                        options['creationflags'] = (getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
+                                                    | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200))
+                    elif lock_fd is not None:
+                        options['pass_fds'] = (lock_fd,)
+                    child = subprocess.Popen(cmd, **options)
+                if windows:
+                    # The child retries this exact lock while the parent's copy is
+                    # released. The enabled ledger row blocks a competing start.
+                    store.release_lock()
             except Exception:
                 store.update(args.thread, 'blocked', '后台进程启动失败；未启用托管', True,
                              only_enabled=True)

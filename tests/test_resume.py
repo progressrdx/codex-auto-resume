@@ -10,13 +10,15 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from codex_resume.app import AppError, Desktop, MAX_FRAME, ThreadUnavailable, open_selected_thread
+from codex_resume.app import (AppError, Desktop, MAX_FRAME, ThreadUnavailable,
+                              WindowsPipe, check_version, open_selected_thread)
 from codex_resume.__main__ import watch_process_spec
 from codex_resume.controller import Controller
 from codex_resume.policy import decide, fingerprint, quota_status, latest_turn
 from codex_resume.rpc import ReadOnlyServer
 from codex_resume.store import Store
 from codex_resume.tasks import list_conversations, stored_assessment, inspect_task
+from codex_resume.runtime import WINDOWS_PIPE, codex_binary, default_app_path
 
 THREAD = '11111111-1111-4111-8111-111111111111'
 
@@ -35,6 +37,17 @@ class SourceLaunchTests(unittest.TestCase):
         self.assertEqual(command[-2:], ['--limit-id', 'codex'])
         self.assertIsNone(env)
         self.assertEqual(cwd.name, 'codex-auto-resume')
+
+    @patch.dict(os.environ, {'LOCALAPPDATA': r'C:\Users\test\AppData\Local'})
+    def test_windows_defaults_to_relocated_bundled_cli(self):
+        path = default_app_path('windows')
+        self.assertEqual(str(path), r'C:\Users\test\AppData\Local/OpenAI/Codex/bin/codex.exe')
+        self.assertEqual(codex_binary(path, 'windows'), path)
+
+    def test_windows_watcher_does_not_receive_posix_descriptor(self):
+        args = self.args()
+        command, _, _ = watch_process_spec(args, None)
+        self.assertNotIn('--lock-fd', command)
 
 
 def state(status='failed', error='usageLimitExceeded', turn_id='t1'):
@@ -603,6 +616,56 @@ class FakeSocket:
 
 
 class TransportTests(unittest.TestCase):
+    def test_windows_pipe_uses_exact_app_endpoint_and_byte_stream(self):
+        class Operation:
+            event = object()
+            def __init__(self, data=b'', count=None, result_error=0):
+                self.data = bytes(data)
+                self.count = len(self.data) if count is None else count
+                self.result_error = result_error
+                self.cancelled = False
+            def GetOverlappedResult(self, _wait): return self.count, self.result_error
+            def getbuffer(self): return memoryview(self.data)
+            def cancel(self): self.cancelled = True
+        class API:
+            GENERIC_READ=1; GENERIC_WRITE=2; NULL=0; OPEN_EXISTING=3; FILE_FLAG_OVERLAPPED=4
+            ERROR_IO_PENDING=997; ERROR_SEM_TIMEOUT=121; ERROR_PIPE_BUSY=231; ERROR_MORE_DATA=234
+            ERROR_BROKEN_PIPE=109; WAIT_TIMEOUT=258
+            def __init__(self): self.writes=[]; self.closed=[]; self.reads=[b'ab', b'c']
+            def WaitNamedPipe(self, endpoint, timeout): self.endpoint, self.wait = endpoint, timeout
+            def CreateFile(self, *args): self.created=args; return 42
+            def WriteFile(self, _handle, data, overlapped):
+                self.writes.append(bytes(data)); return Operation(count=len(data)), 0
+            def ReadFile(self, _handle, _size, overlapped):
+                data = self.reads.pop(0)
+                return Operation(data, result_error=self.ERROR_MORE_DATA if data == b'ab' else 0), 0
+            def PeekNamedPipe(self, _handle): return (len(self.reads), 0)
+            def WaitForMultipleObjects(self, *_args): return 0
+            def CloseHandle(self, handle): self.closed.append(handle)
+        api=API(); pipe=WindowsPipe(timeout=1, api=api)
+        self.assertEqual(api.endpoint, WINDOWS_PIPE)
+        pipe.sendall(b'frame'); self.assertEqual(api.writes, [b'frame'])
+        self.assertEqual(pipe.recv(2), b'ab'); self.assertTrue(pipe.has_data())
+        pipe.close(); self.assertEqual(api.closed, [42])
+
+    @patch('codex_resume.app.windows_package_version', return_value='26.901.31953.0')
+    @patch('codex_resume.app.subprocess.run')
+    def test_windows_version_requires_exact_package_and_cli(self, run, package):
+        run.return_value = SimpleNamespace(returncode=0, stdout='codex-cli 0.153.1\n')
+        with tempfile.TemporaryDirectory() as directory:
+            binary=Path(directory)/'codex.exe'; binary.touch()
+            result=check_version(binary, 'windows')
+        self.assertEqual(result['platform'], 'windows')
+        self.assertEqual(result['cliVersion'], '0.153.1')
+
+    @patch('codex_resume.app.windows_package_version', return_value='99.0.0.0')
+    @patch('codex_resume.app.subprocess.run')
+    def test_windows_future_version_fails_closed(self, run, package):
+        run.return_value = SimpleNamespace(returncode=0, stdout='codex-cli 0.153.1\n')
+        with tempfile.TemporaryDirectory() as directory:
+            binary=Path(directory)/'codex.exe'; binary.touch()
+            with self.assertRaises(AppError): check_version(binary, 'windows')
+
     @patch('codex_resume.app.check_version')
     def test_resume_observes_already_queued_ipc_events_before_dispatch(self, check):
         import socket
@@ -686,6 +749,32 @@ class TransportTests(unittest.TestCase):
 
 
 class StartupTests(unittest.TestCase):
+    @patch('codex_resume.__main__.platform_name', return_value='windows')
+    @patch('codex_resume.__main__.check_version')
+    @patch('codex_resume.__main__.inspect_task', return_value={'canMonitor': True})
+    def test_windows_start_uses_detached_process_without_inherited_descriptor(self, inspect, version, system):
+        from codex_resume.__main__ import main
+        with tempfile.TemporaryDirectory() as directory:
+            def spawn(*args, **kwargs):
+                self.assertNotIn('pass_fds', kwargs)
+                self.assertNotIn('start_new_session', kwargs)
+                self.assertTrue(kwargs['creationflags'] & 0x00000008)
+                child_store = Store(directory)
+                try:
+                    child_store.update(THREAD, 'watching', 'synthetic Windows child')
+                finally:
+                    child_store.close()
+                return SimpleNamespace(pid=321, poll=lambda: None)
+            with patch('codex_resume.__main__.subprocess.Popen', side_effect=spawn):
+                main(['--state-dir', directory, 'start', THREAD])
+            ledger = Store(directory)
+            try:
+                self.assertEqual(ledger.get(THREAD)['status'], 'watching')
+                ledger.lock(THREAD)
+            finally:
+                ledger.close()
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX inherited descriptor test')
     @patch('codex_resume.__main__.check_version')
     @patch('codex_resume.__main__.inspect_task', return_value={'canMonitor': True})
     def test_second_start_during_spawn_cannot_replace_budget(self, inspect, version):
@@ -715,7 +804,8 @@ class StartupTests(unittest.TestCase):
     @patch('codex_resume.__main__.inspect_task', return_value={'canMonitor': True})
     def test_log_or_spawn_failure_disables_starting_watch(self, inspect, version):
         from codex_resume.__main__ import main
-        for failure in ('log', 'spawn', 'spawn_after_stop'):
+        failures = ('spawn', 'spawn_after_stop') if os.name == 'nt' else ('log', 'spawn', 'spawn_after_stop')
+        for failure in failures:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 if failure == 'log':
                     (Path(directory) / (THREAD + '.log')).symlink_to(Path(directory) / 'absent')
@@ -745,6 +835,7 @@ class StartupTests(unittest.TestCase):
 
 
 class IntegrationTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX inherited descriptor test')
     def test_inherited_lock_survives_parent_close_and_is_not_reinherited(self):
         import select
         import subprocess
@@ -778,6 +869,7 @@ class IntegrationTests(unittest.TestCase):
                 if child.poll() is None:
                     child.kill(); child.communicate(timeout=5)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX inherited descriptor test')
     def test_inherited_lock_rejects_unrelated_file_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Store(directory)
@@ -789,6 +881,7 @@ class IntegrationTests(unittest.TestCase):
             finally:
                 ledger.close()
 
+    @unittest.skipIf(os.name == 'nt', 'portable subprocess fixture uses a POSIX shebang')
     def test_rpc_real_subprocess_coalesced_notifications(self):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / 'server'
@@ -807,6 +900,23 @@ for line in sys.stdin:
                 process = server.process
             self.assertIsNotNone(process.poll())
 
+    @unittest.skipIf(os.name == 'nt', 'portable subprocess fixture uses a POSIX shebang')
+    def test_rpc_windows_reader_does_not_use_fd_selector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'server'
+            script.write_text("#!/usr/bin/env python3\n" + """
+import json,sys
+for line in sys.stdin:
+    data=json.loads(line)
+    if 'id' not in data: continue
+    result={'ok': True} if data['method']=='initialize' else {'rateLimits': {'windows': True}}
+    sys.stdout.write(json.dumps({'id':data['id'],'result':result})+'\\n'); sys.stdout.flush()
+""")
+            script.chmod(0o700)
+            with ReadOnlyServer(script, directory, timeout=10, system='windows') as server:
+                self.assertEqual(server.query('account/rateLimits/read'), {'rateLimits': {'windows': True}})
+                self.assertIsNone(server.selector)
+
     def test_version_mismatch_is_closed(self):
         import plistlib
         from codex_resume.app import check_version
@@ -816,6 +926,7 @@ for line in sys.stdin:
                 'CFBundleVersion':'future', 'CFBundleShortVersionString':'next'}))
             with self.assertRaises(AppError): check_version(directory)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX ownership and mode test')
     def test_private_directory_rejects_shared_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory).chmod(0o755)

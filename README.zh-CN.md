@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/progressrdx/codex-auto-resume/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/progressrdx/codex-auto-resume/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white">
-  <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?logo=apple">
+  <img alt="macOS 与 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-111111">
   <img alt="仅本机运行" src="https://img.shields.io/badge/runtime-local--only-12695c">
   <img alt="零运行依赖" src="https://img.shields.io/badge/runtime%20dependencies-0-12695c">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-12695c"></a>
@@ -60,11 +60,14 @@
 
 ### 环境要求
 
-- macOS
+- macOS，或 Windows 11（Windows 当前为预览支持）
 - Python 3.9 或更高版本
 - 已安装、登录并保持打开的 Codex 桌面 App
-- 当前验证的 App 版本：`26.820.60940 / build 7119`
-- App 默认路径：`/Applications/ChatGPT.app`
+- macOS 当前验证版本：`26.820.60940 / build 7119`
+- Windows 当前适配版本：App `26.901.31953.0`、CLI `0.153.1`
+- 默认路径：macOS `/Applications/ChatGPT.app`；Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
+
+Windows 预览版请在 Windows 原生 PowerShell 或命令提示符中运行，不要放到 WSL 里运行。本工具需要连接 Windows Codex App 的本机命名管道。Codex 官方 Windows App 本身支持原生 Windows 和可选 WSL 工作区，但这是两个不同的运行环境。
 
 遇到未验证的 App 版本时，工具会拒绝运行，而不是猜测内部协议。
 
@@ -74,8 +77,9 @@
 
 ```text
 请先阅读 README.md、README.zh-CN.md、AGENTS.md 和
-.agents/skills/codex-auto-resume/SKILL.md。检查本机是否满足运行条件，执行
-./resume doctor；如果只读检查通过，再执行 ./resume web，并保持本机服务运行。
+.agents/skills/codex-auto-resume/SKILL.md。检查本机是否满足运行条件。macOS 使用
+./resume，Windows 使用 .\resume.cmd；先运行 doctor，如果只读检查通过，再运行 web，
+并保持本机服务运行。
 把这次服务输出的准确控制台地址和连接凭据告诉我。在我明确选择一个准确任务前，
 不要选择、启动、停止或托管任何 Codex 任务。
 ```
@@ -89,7 +93,7 @@ Codex 可以替你检查环境并启动本机服务。根据你的 Codex 权限�
 连接凭据：Jr7...本次启动生成的其余随机字符
 ```
 
-在同一台 Mac 的浏览器中打开控制台地址，粘贴这段凭据，然后点击“连接”。这个凭据由 `./resume web` 在你的电脑上临时生成，**不是** OpenAI API Key、ChatGPT 密码、Codex 账号令牌或 GitHub Token，也不需要去任何网站或账号设置中申请。
+在同一台电脑的浏览器中打开控制台地址，粘贴这段凭据，然后点击“连接”。这个凭据由 `./resume web`（Windows 为 `.\resume.cmd web`）在你的电脑上临时生成，**不是** OpenAI API Key、ChatGPT 密码、Codex 账号令牌或 GitHub Token，也不需要去任何网站或账号设置中申请。
 
 > [!NOTE]
 > 每次启动 Web 服务都会生成一个新的随机凭据。它只出现在本次服务的终端输出中，也只在该进程运行期间有效。重新启动 `./resume web` 后，旧凭据立即失效。如果不小心公开了凭据，在服务终端按 `Control-C` 停止，然后重新启动即可更换。
@@ -97,7 +101,8 @@ Codex 可以替你检查环境并启动本机服务。根据你的 Codex 权限�
 管理界面连接成功后，可以让 Codex 先列出任务，但不托管任何任务：
 
 ```text
-请执行 ./resume list，列出本地可用的 Codex 任务，但不要托管任何任务，
+请执行适合当前系统的 list 命令（macOS：./resume list；Windows：.\resume.cmd list），
+列出本地可用的 Codex 任务，但不要托管任何任务，
 我会先明确选择一个准确任务。
 ```
 
@@ -127,16 +132,32 @@ cd codex-auto-resume
 
 #### 2. 只读检查
 
+macOS：
+
 ```bash
 ./resume doctor
+```
+
+Windows（PowerShell 或命令提示符）：
+
+```powershell
+.\resume.cmd doctor
 ```
 
 `doctor` 只检查 App 版本、本地连接和额度窗口，不会运行模型、选择任务或发送消息。
 
 #### 3. 启动本机界面
 
+macOS：
+
 ```bash
 ./resume web
+```
+
+Windows：
+
+```powershell
+.\resume.cmd web
 ```
 
 终端会输出本机地址和每次启动重新生成的连接凭据。凭据由本机进程在启动时生成，不来自 OpenAI、ChatGPT、Codex 或 GitHub：
@@ -146,7 +167,7 @@ cd codex-auto-resume
 连接凭据：<本次启动的随机凭据>
 ```
 
-在同一台 Mac 的浏览器打开地址并输入凭据。凭据应从正在运行 `./resume web` 的终端复制，也可以使用 Codex 根据该终端原始输出告诉你的值。服务固定监听 `127.0.0.1`，不会暴露到局域网或公网。
+在同一台电脑的浏览器打开地址并输入凭据。凭据应从正在运行 Web 服务的终端复制，也可以使用 Codex 根据该终端原始输出告诉你的值。服务固定监听 `127.0.0.1`，不会暴露到局域网或公网。
 
 ## 使用管理界面
 
@@ -160,6 +181,8 @@ cd codex-auto-resume
 停止监控只取消未来续跑，不会中断 Codex 中已经运行的工作，也无法撤回 App 已经接受的消息。关闭网页或 Web 服务不会停止已经启动的 watcher。
 
 ## 命令行使用
+
+下面以 macOS 的 `./resume` 为例。Windows 将每条命令开头替换成 `.\resume.cmd`，其余参数完全相同。
 
 ```bash
 # 发现本地对话，但不会自动托管。
@@ -255,6 +278,8 @@ flowchart LR
 | 使用其他状态目录 | `./resume --state-dir /private/path web` |
 | 指定 Python | `PYTHON_BIN=/path/to/python3 ./resume web` |
 
+Windows 自定义路径示例：`.\resume.cmd --app "C:\path\to\codex.exe" web`。通常不需要填写，启动器会使用当前用户的默认 App 路径。
+
 工具故意不提供绑定 `0.0.0.0`、局域网地址或公网地址的选项。
 
 ## 更新源码
@@ -267,6 +292,8 @@ git pull
 ./resume web
 ```
 
+Windows 对应命令为 `git pull`、`.\resume.cmd doctor`、`.\resume.cmd web`。
+
 更新源码不会清除已有预算和防重复账本。Web 服务重启会更换浏览器连接凭据，已经运行的 watcher 不会热更新新源码。
 
 ## 当前验证状态
@@ -278,16 +305,18 @@ git pull
 - 隔离的策略、持久化、进程锁、取消和传输测试；
 - 带凭据的回环 Web API 和浏览器界面；
 - 过期响应、过期会话、重复点击和不确定写操作保护；
-- 从仓库外目录调用源码启动器。
+- 从仓库外目录调用源码启动器；
+- Windows 命名管道、App/CLI 版本保护、后台进程锁和非文件描述符的只读查询路径；
+- GitHub Actions 同时在 Windows、macOS 和 Linux 上运行隔离回归。
 
-已在当前支持的 Codex 桌面 App 版本上完成真实账户验证：
+已在当前支持的 macOS Codex 桌面 App 版本上完成真实账户验证：
 
 - 两次完整成功经历“真实额度耗尽 → 跨自然重置窗口 → 在原任务中自动确认续跑”。
 
 当前自动化测试：
 
 ```text
-Python：99 项通过
+Python：108 项（本机 107 项通过，1 项 Windows 专用启动器测试跳过）
 浏览器 UI：26 项通过
 运行时第三方依赖：0
 ```
@@ -296,6 +325,7 @@ Python：99 项通过
 
 - 未来所有 Codex 桌面 App 版本和内部协议变化；
 - 两次真实验证之外的所有账户、机器、休眠/网络条件和任务状态组合；
+- Windows 真实机器上的完整“额度耗尽 → 自然恢复 → 自动续跑”周期尚未验证，因此 Windows 暂标为预览；
 - 证明某一轮正常结束等同于用户的整体业务目标已经完成。
 
 ## 故障排查
@@ -309,7 +339,7 @@ Python：99 项通过
 <details>
 <summary><strong>管理界面无法连接</strong></summary>
 
-保持 `./resume web` 进程运行，使用它输出的准确地址和同一次启动生成的凭据。旧服务的凭据会按设计失效。
+保持 Web 服务进程运行，使用它输出的准确地址和同一次启动生成的凭据。旧服务的凭据会按设计失效。Windows 使用 `.\resume.cmd web`。
 </details>
 
 <details>
@@ -363,11 +393,11 @@ python3 scripts/verify_release.py
 
 ### 需要服务器或域名吗？
 
-不需要。所有功能都运行在 Codex 桌面 App 所在的同一台 Mac 上。
+不需要。所有功能都运行在 Codex 桌面 App 所在的同一台电脑上。
 
 ### 关闭终端会停止监控吗？
 
-关闭启动 watcher 的终端不会停止 watcher。关闭 Web 服务只会关闭管理界面。Mac 重启后需要重新启动监控。
+关闭启动 watcher 的终端不会停止 watcher。关闭 Web 服务只会关闭管理界面。电脑重启后需要重新启动监控。
 
 ### 可以自动监控全部未完成任务吗？
 

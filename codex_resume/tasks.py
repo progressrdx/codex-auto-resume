@@ -6,6 +6,7 @@ import uuid
 from .app import ConnectionUnavailable, Desktop
 from .policy import decide, interrupted_context_picker, quota_failure
 from .rpc import ReadOnlyServer
+from .runtime import codex_binary
 
 SOURCES = ['cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
            'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown']
@@ -79,7 +80,7 @@ def inspect_task(home, app_path, thread_id):
     thread_id = str(uuid.UUID(thread_id))
     # Archiving is a user stop signal, even if the last persisted turn was still
     # in progress. Never navigate to or enroll an archived conversation.
-    with ReadOnlyServer(app_path / 'Contents/Resources/codex', home) as server:
+    with ReadOnlyServer(codex_binary(app_path), home) as server:
         archived = next((r for r in list_conversations(server, (True,)) if r['id'] == thread_id), None)
     if archived:
         return {'threadId': thread_id, 'title': archived.get('name') or archived.get('preview'),
@@ -101,6 +102,6 @@ def inspect_task(home, app_path, thread_id):
                         for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
     except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
         pass
-    with ReadOnlyServer(app_path / 'Contents/Resources/codex', home) as server:
+    with ReadOnlyServer(codex_binary(app_path), home) as server:
         response = server.query('thread/read', {'threadId': thread_id, 'includeTurns': True})
     return stored_assessment(response.get('thread'), thread_id)

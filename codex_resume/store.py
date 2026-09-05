@@ -1,5 +1,4 @@
 """Private local ledger; an uncertain dispatch is never automatically repeated."""
-import fcntl
 import os
 from pathlib import Path
 import sqlite3
@@ -7,19 +6,26 @@ import stat
 import time
 import uuid
 
+if os.name == 'nt':
+    import msvcrt
+else:
+    import fcntl
+
 
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         st = self.directory.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        if (not stat.S_ISDIR(st.st_mode) or self.directory.is_symlink()
+                or (os.name != 'nt' and (st.st_uid != os.getuid() or st.st_mode & 0o077))):
             raise RuntimeError('状态目录必须属于当前用户，且只有当前用户可访问')
         path = self.directory / 'state.sqlite3'
         if path.is_symlink():
             raise RuntimeError('拒绝使用符号链接状态数据库')
         self.db = sqlite3.connect(path, timeout=5)
-        os.chmod(path, 0o600)
+        if os.name != 'nt':
+            os.chmod(path, 0o600)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript('''
@@ -38,14 +44,23 @@ class Store:
         self.lock_file = None
 
     def close(self):
+        self.release_lock()
+        self.db.close()
+
+    def release_lock(self):
         if self.lock_file:
             self.lock_file.close()
-        self.db.close()
+            self.lock_file = None
 
     def lock(self, thread_id, inherited_fd=None):
         path = self.directory / (str(uuid.UUID(thread_id)) + '.lock')
+        if os.name == 'nt' and inherited_fd is not None:
+            raise RuntimeError('Windows 监控进程必须自行获取私有任务锁')
         if inherited_fd is None:
-            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            if path.is_symlink():
+                raise RuntimeError('拒绝使用符号链接任务锁')
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NOINHERIT', 0)
+            fd = os.open(path, flags, 0o600)
         else:
             fd = inherited_fd
             expected, actual = path.lstat(), os.fstat(fd)
@@ -54,9 +69,16 @@ class Store:
                     or actual.st_uid != os.getuid() or actual.st_mode & 0o077):
                 raise RuntimeError('继承的进程锁不是所选任务的私有锁文件')
             os.set_inheritable(fd, False)
-        f = os.fdopen(fd, 'w')
+        f = os.fdopen(fd, 'r+')
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == 'nt':
+                if os.fstat(f.fileno()).st_size == 0:
+                    f.write('\0')
+                    f.flush()
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             f.close()
             raise RuntimeError('该任务已有一个监控进程')

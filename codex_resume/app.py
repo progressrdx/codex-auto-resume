@@ -12,8 +12,11 @@ import time
 import uuid
 
 from .policy import decide, fingerprint
+from .runtime import WINDOWS_PIPE, codex_binary, platform_name, windows_package_version
 
-SUPPORTED_APP = ('26.820.60940', '7119')
+SUPPORTED_MAC_APPS = {('26.820.60940', '7119')}
+SUPPORTED_WINDOWS_APPS = {'26.901.31953.0', '26.901.31953'}
+SUPPORTED_WINDOWS_CLIS = {'0.153.1'}
 MAX_FRAME = 32 * 1024 * 1024
 CONTINUATION = ('额度恢复后，请继续本会话原有的未完成工作。先核对当前进度与工作区，'
                 '不要重复已完成步骤，不扩大范围，不绕过审批。若工作已经完成或需要用户决定，请明确说明并停止。')
@@ -31,35 +34,126 @@ class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
 
-def check_version(app_path):
+def check_version(app_path, system=None):
+    system = system or platform_name()
+    if system == 'windows':
+        binary = codex_binary(app_path, system)
+        if not binary.is_file():
+            raise AppError('找不到 Windows Codex App 的 codex.exe；请先启动一次 Codex App')
+        try:
+            result = subprocess.run([str(binary), '--version'], capture_output=True, text=True,
+                                    timeout=5, stdin=subprocess.DEVNULL)
+            cli_version = result.stdout.strip().removeprefix('codex-cli ').strip()
+            app_version = windows_package_version()
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            raise AppError(str(exc) or '无法核验 Windows Codex App 版本') from exc
+        if result.returncode or cli_version not in SUPPORTED_WINDOWS_CLIS or app_version not in SUPPORTED_WINDOWS_APPS:
+            raise AppError('Windows App 版本不在已验证范围内；停止操作，需先适配新版本')
+        return {'platform': 'windows', 'version': app_version, 'cliVersion': cli_version}
     path = Path(app_path)
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
     except (OSError, ValueError) as exc:
         raise AppError('找不到可识别的 Codex App') from exc
     version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
-    if info.get('CFBundleIdentifier') != 'com.openai.codex' or version != SUPPORTED_APP:
+    if info.get('CFBundleIdentifier') != 'com.openai.codex' or version not in SUPPORTED_MAC_APPS:
         raise AppError('App 版本不在已验证范围内；停止操作，需先适配新版本')
-    return {'version': version[0], 'build': version[1]}
+    return {'platform': 'macos', 'version': version[0], 'build': version[1]}
 
 
-def open_selected_thread(app_path, thread_id):
+def open_selected_thread(app_path, thread_id, system=None):
     """Navigate to an existing selected conversation. Never prefill/send a prompt.
 
     The pinned App's localConversation deep-link handler checks thread existence
     then navigates to its original route. This does not make this client an owner.
     Success here only means navigation was requested; a fresh snapshot is required.
     """
-    check_version(app_path)
+    system = system or platform_name()
+    check_version(app_path, system)
     target = str(uuid.UUID(thread_id))
-    subprocess.run(['/usr/bin/open', '-g', '-a', str(app_path), 'codex://threads/' + target],
+    command = (['cmd.exe', '/d', '/s', '/c', 'start', '', 'codex://threads/' + target]
+               if system == 'windows' else
+               ['/usr/bin/open', '-g', '-a', str(app_path), 'codex://threads/' + target])
+    subprocess.run(command,
                    check=True, timeout=5, stdin=subprocess.DEVNULL,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+class WindowsPipe:
+    """Small stdlib-only byte-stream client for the App's Windows named pipe."""
+    def __init__(self, endpoint=WINDOWS_PIPE, timeout=12, api=None):
+        if api is None:
+            import _winapi
+            api = _winapi
+        self.api, self.timeout, self.handle = api, timeout, None
+        deadline = time.monotonic() + timeout
+        while self.handle is None:
+            remaining = max(1, int((deadline - time.monotonic()) * 1000))
+            if remaining <= 1 and time.monotonic() >= deadline:
+                raise TimeoutError('App 命名管道连接超时')
+            try:
+                api.WaitNamedPipe(endpoint, min(1000, remaining))
+                self.handle = api.CreateFile(endpoint, api.GENERIC_READ | api.GENERIC_WRITE,
+                    0, api.NULL, api.OPEN_EXISTING, api.FILE_FLAG_OVERLAPPED, api.NULL)
+            except OSError as exc:
+                if getattr(exc, 'winerror', None) not in (api.ERROR_SEM_TIMEOUT, api.ERROR_PIPE_BUSY):
+                    raise ConnectionUnavailable('无法连接 Windows Codex App 命名管道') from exc
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def _complete(self, operation, error):
+        if error == self.api.ERROR_IO_PENDING:
+            result = self.api.WaitForMultipleObjects([operation.event], False,
+                max(1, int(self.timeout * 1000)))
+            if result == self.api.WAIT_TIMEOUT:
+                operation.cancel()
+                raise TimeoutError('App 响应超时')
+            if result != getattr(self.api, 'WAIT_OBJECT_0', 0):
+                operation.cancel()
+                raise ConnectionUnavailable('Windows Codex App 管道等待失败')
+        count, error = operation.GetOverlappedResult(True)
+        if error not in (0, getattr(self.api, 'ERROR_MORE_DATA', 234)):
+            raise ConnectionUnavailable('Windows Codex App 管道读写失败')
+        return count
+
+    def sendall(self, data):
+        view = memoryview(data)
+        while view:
+            operation, error = self.api.WriteFile(self.handle, view, overlapped=True)
+            count = self._complete(operation, error)
+            if count <= 0:
+                raise ConnectionUnavailable('Windows Codex App 管道已断开')
+            view = view[count:]
+
+    def recv(self, size):
+        try:
+            operation, error = self.api.ReadFile(self.handle, size, overlapped=True)
+            count = self._complete(operation, error)
+            return bytes(operation.getbuffer()[:count])
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == self.api.ERROR_BROKEN_PIPE:
+                return b''
+            raise
+
+    def has_data(self):
+        try:
+            return self.api.PeekNamedPipe(self.handle)[0] > 0
+        except OSError as exc:
+            raise ConnectionUnavailable('Windows Codex App 管道已断开') from exc
+
+    def close(self):
+        if self.handle is not None:
+            self.api.CloseHandle(self.handle)
+            self.handle = None
+
+
 class Desktop:
-    def __init__(self, home, app_path='/Applications/ChatGPT.app', timeout=12):
+    def __init__(self, home, app_path='/Applications/ChatGPT.app', timeout=12, system=None,
+                 transport_factory=None):
         self.home, self.app_path, self.timeout = Path(home), Path(app_path), timeout
+        self.system = system or platform_name()
+        self.transport_factory = transport_factory
         self.sock = None
         self.client_id = 'initializing-client'
         self.owner = None
@@ -69,7 +163,16 @@ class Desktop:
         self.state_generation = 0
 
     def __enter__(self):
-        check_version(self.app_path)
+        check_version(self.app_path, self.system)
+        if self.system == 'windows':
+            self.sock = (self.transport_factory or WindowsPipe)(WINDOWS_PIPE, self.timeout)
+            try:
+                result = self.request('initialize', {'clientType': 'codex-auto-resume'}, 0)
+                self.client_id = result['result']['clientId']
+                return self
+            except Exception:
+                self.close()
+                raise
         path = self.home / 'ipc/ipc.sock'
         try:
             directory, endpoint = path.parent.lstat(), path.lstat()
@@ -200,13 +303,14 @@ class Desktop:
         """
         deadline = time.monotonic() + self.timeout
         for _ in range(128):
-            if not select.select([self.sock], [], [], 0)[0]:
+            pending = self.sock.has_data() if hasattr(self.sock, 'has_data') else bool(select.select([self.sock], [], [], 0)[0])
+            if not pending:
                 return
             self._read(deadline)
         raise AppError('App 状态仍在变化；取消本次续跑')
 
     def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
-        check_version(self.app_path)  # Stop if the app updated while we were waiting.
+        check_version(self.app_path, self.system)  # Stop if the app updated while we were waiting.
         state = self.snapshot(thread_id)
         if decide(state).action != 'resume' or fingerprint(state) != expected_fingerprint:
             raise AppError('发送前任务状态已改变；取消本次续跑')

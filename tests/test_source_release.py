@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class SourceReleaseTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX launcher test')
     def test_launcher_works_outside_repository(self):
         with tempfile.TemporaryDirectory() as outside:
             result = subprocess.run([ROOT / 'resume', '--help'], cwd=outside,
@@ -16,6 +17,7 @@ class SourceReleaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('本地额度恢复续跑工具', result.stdout)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX launcher test')
     def test_launcher_rejects_missing_python_without_running_tool(self):
         env = os.environ.copy()
         env['PYTHON_BIN'] = 'definitely-not-a-python-command'
@@ -33,6 +35,21 @@ class SourceReleaseTests(unittest.TestCase):
         self.assertTrue(content.startswith('---\nname: codex-auto-resume\n'))
         self.assertIn('`./resume`', content)
         self.assertTrue(os.access(ROOT / 'resume', os.X_OK))
+
+    def test_windows_launchers_are_dependency_free_and_keep_arguments(self):
+        cmd = (ROOT / 'resume.cmd').read_text()
+        powershell = (ROOT / 'resume.ps1').read_text()
+        self.assertIn('-m codex_resume %*', cmd)
+        self.assertIn('-m codex_resume @args', powershell)
+        self.assertNotIn('pip install', cmd + powershell)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows launcher test')
+    def test_windows_launcher_works_outside_repository(self):
+        with tempfile.TemporaryDirectory() as outside:
+            result = subprocess.run(['cmd.exe', '/d', '/s', '/c', str(ROOT / 'resume.cmd'), '--help'],
+                                    cwd=outside, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Codex App', result.stdout)
 
     def test_checkout_excludes_retired_clients_and_packaging_dependencies(self):
         for path in (

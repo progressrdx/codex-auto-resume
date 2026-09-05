@@ -2,18 +2,25 @@
 import json
 import os
 from pathlib import Path
+import queue
 import selectors
 import subprocess
+import threading
 import time
+
+from .runtime import platform_name
 
 
 class ReadOnlyServer:
     METHODS = {'account/rateLimits/read', 'thread/list', 'thread/read'}
 
-    def __init__(self, binary, home, timeout=25):
+    def __init__(self, binary, home, timeout=25, system=None):
         self.binary, self.home, self.timeout = str(binary), str(home), timeout
+        self.system = system or platform_name()
         self.process = None
         self.selector = None
+        self.chunks = None
+        self.reader = None
         self.buffer = b''
         self.counter = 0
 
@@ -24,8 +31,22 @@ class ReadOnlyServer:
         self.process = subprocess.Popen([self.binary, 'app-server', '--stdio'], env=env,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL)
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(self.process.stdout, selectors.EVENT_READ)
+        if self.system == 'windows':
+            self.chunks = queue.Queue()
+            def read_stdout():
+                try:
+                    while True:
+                        chunk = self.process.stdout.read1(65536)
+                        self.chunks.put(chunk or None)
+                        if not chunk:
+                            return
+                except Exception as exc:
+                    self.chunks.put(exc)
+            self.reader = threading.Thread(target=read_stdout, name='codex-read-only-rpc', daemon=True)
+            self.reader.start()
+        else:
+            self.selector = selectors.DefaultSelector()
+            self.selector.register(self.process.stdout, selectors.EVENT_READ)
         try:
             self._request('initialize', {'clientInfo': {'name': 'codex_auto_resume', 'version': '0.1.0'}})
             self._send({'method': 'initialized'})
@@ -47,6 +68,8 @@ class ReadOnlyServer:
             for stream in (self.process.stdin, self.process.stdout):
                 if stream:
                     stream.close()
+        if self.reader:
+            self.reader.join(timeout=1)
 
     def _send(self, data):
         self.process.stdin.write(json.dumps(data).encode() + b'\n')
@@ -55,9 +78,19 @@ class ReadOnlyServer:
     def _line(self, deadline):
         while b'\n' not in self.buffer:
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not self.selector.select(remaining):
+            if remaining <= 0:
                 raise TimeoutError('额度/任务查询超时')
-            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if self.system == 'windows':
+                try:
+                    chunk = self.chunks.get(timeout=remaining)
+                except queue.Empty:
+                    raise TimeoutError('额度/任务查询超时')
+                if isinstance(chunk, Exception):
+                    raise RuntimeError('只读查询服务读取失败') from chunk
+            else:
+                if not self.selector.select(remaining):
+                    raise TimeoutError('额度/任务查询超时')
+                chunk = os.read(self.process.stdout.fileno(), 65536)
             if not chunk:
                 raise RuntimeError('只读查询服务已退出')
             self.buffer += chunk
