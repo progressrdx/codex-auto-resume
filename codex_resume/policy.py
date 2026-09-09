@@ -18,19 +18,34 @@ class Decision:
 
 
 def latest_turn(state):
+    if not isinstance(state, dict):
+        raise UnsupportedState('不支持的会话状态结构')
     history = state.get('turnHistory')
-    if isinstance(history, dict) and history.get('kind') == 'canonical':
-        hist = history.get('history', {})
-        islands = hist.get('islands', [])
-        if not islands:
+    # Only absent/null history denotes the legacy schema. An unknown tagged
+    # history must never fall back to potentially stale legacy turns.
+    if history is not None:
+        if not isinstance(history, dict) or history.get('kind') != 'canonical':
+            raise UnsupportedState('不支持的会话历史格式；需重新验证 App 协议')
+        hist = history.get('history')
+        if not isinstance(hist, dict):
+            raise UnsupportedState('不支持的会话历史结构')
+        islands = hist.get('islands')
+        if not isinstance(islands, list) or not islands:
             raise UnsupportedState('没有可验证的最新会话历史')
         tail = islands[-1]
-        if tail.get('newerBoundary', {}).get('status') != 'exhausted':
+        if not isinstance(tail, dict):
+            raise UnsupportedState('不支持的历史尾部结构')
+        boundary = tail.get('newerBoundary')
+        if not isinstance(boundary, dict) or boundary.get('status') != 'exhausted':
             raise UnsupportedState('历史尾部不完整；不能判断最新一轮')
-        entries = tail.get('entries', [])
-        if not entries:
-            raise UnsupportedState('最新历史片段为空')
-        turn = hist.get('entitiesByKey', {}).get(entries[-1].get('value'))
+        entries, entities = tail.get('entries'), hist.get('entitiesByKey')
+        if not isinstance(entries, list) or not entries:
+            raise UnsupportedState('最新历史片段为空或结构不受支持')
+        entry = entries[-1]
+        if (not isinstance(entry, dict) or not isinstance(entry.get('value'), str)
+                or not entry['value'] or not isinstance(entities, dict)):
+            raise UnsupportedState('最新轮次引用不受支持')
+        turn = entities.get(entry['value'])
     else:
         turns = state.get('turns')
         if not isinstance(turns, list) or not turns:
