@@ -130,6 +130,9 @@ def decide(state):
     goal = state.get('threadGoal')
     if goal is not None and (not isinstance(goal, dict) or goal.get('status') != 'active'):
         return Decision('stop', '任务目标已暂停、受阻或结束', task_state='needs_attention')
+    submissions = state.get('unconfirmedTurnSubmissions')
+    if submissions is not None and (not isinstance(submissions, list) or submissions):
+        return Decision('stop', 'App 中存在未确认的提交或提交状态不明确；请先核对原对话', task_state='needs_attention')
     if state.get('queuedFollowUps'):
         return Decision('stop', '已有用户排队消息', task_state='needs_attention')
     runtime = state.get('threadRuntimeStatus')
@@ -171,6 +174,7 @@ def fingerprint(state):
     keys = ('id', 'hostId', 'cwd', 'latestModel', 'latestReasoningEffort',
             'latestCollaborationMode', 'currentPermissions', 'latestThreadSettings',
             'threadGoal', 'threadGoalResumeConfirmation', 'requests', 'queuedFollowUps',
+            'unconfirmedTurnSubmissions',
             'threadRuntimeStatus', 'resumeState')
     data = {k: state.get(k) for k in keys}
     data['turn'] = latest_turn(state)
