@@ -143,6 +143,25 @@ class BackendTests(unittest.TestCase):
             first=self.backend.quota(); second=self.backend.quota()
             self.assertEqual(first,second); self.assertEqual(command.call_count,1)
             self.assertNotIn('credits',first)
+    def test_quota_prefers_authoritative_bucket_over_legacy(self):
+        raw = {'app': {}, 'ipc': 'connected', 'ready': False, 'reason': 'exhausted',
+               'rateLimits': {'primary': {'usedPercent': 10}},
+               'rateLimitsByLimitId': {'codex': {'primary': {'usedPercent': 100}}}}
+        with patch.object(self.backend, 'command', return_value=raw):
+            result = self.backend.quota()
+        self.assertEqual(result['primary']['usedPercent'], 100)
+        self.assertEqual(result['limitId'], 'codex')
+
+    def test_quota_does_not_guess_between_multiple_buckets(self):
+        raw = {'app': {}, 'ipc': 'connected', 'ready': False, 'reason': 'choose bucket',
+               'rateLimits': {'primary': {'usedPercent': 10}},
+               'rateLimitsByLimitId': {'codex': {'primary': {'usedPercent': 100}},
+                                      'other': {'primary': {'usedPercent': 0}}}}
+        with patch.object(self.backend, 'command', return_value=raw):
+            result = self.backend.quota()
+        self.assertIsNone(result['primary'])
+        self.assertIsNone(result['limitId'])
+
     def test_command_timeout_no_retry(self):
         import subprocess
         with patch('codex_resume.web.subprocess.run',side_effect=subprocess.TimeoutExpired('test',65)) as run:

@@ -36,7 +36,7 @@ class SourceLaunchTests(unittest.TestCase):
         self.assertEqual(command[:3], ['/usr/bin/python3', '-m', 'codex_resume'])
         self.assertEqual(command[-2:], ['--limit-id', 'codex'])
         self.assertIsNone(env)
-        self.assertEqual(cwd.name, 'codex-auto-resume')
+        self.assertEqual(cwd, Path(__file__).resolve().parents[1])
 
     @patch.dict(os.environ, {'LOCALAPPDATA': r'C:\Users\test\AppData\Local'})
     def test_windows_defaults_to_relocated_bundled_cli(self):
@@ -49,6 +49,21 @@ class SourceLaunchTests(unittest.TestCase):
         args = self.args()
         command, _, _ = watch_process_spec(args, None)
         self.assertNotIn('--lock-fd', command)
+
+
+class DoctorQuotaTests(unittest.TestCase):
+    def test_doctor_preserves_authoritative_buckets_for_ui(self):
+        from codex_resume.__main__ import main
+        response = quota(reset=time.time()+10000, weekly_reset=time.time()+20000)
+        with patch('codex_resume.__main__.check_version', return_value={}), \
+             patch('codex_resume.__main__.ReadOnlyServer') as server, \
+             patch('codex_resume.__main__.Desktop'), \
+             patch('codex_resume.__main__.output') as output:
+            server.return_value.__enter__.return_value.query.return_value = response
+            main(['doctor'])
+        result = output.call_args.args[0]
+        self.assertEqual(result['rateLimitsByLimitId'], response['rateLimitsByLimitId'])
+        self.assertTrue(result['ready'])
 
 
 def state(status='failed', error='usageLimitExceeded', turn_id='t1'):

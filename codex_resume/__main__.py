@@ -155,6 +155,7 @@ def main(argv=None):
             output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
                     'ready': ready, 'nextCheck': next_check, 'reason': reason,
                     'rateLimits': quota.get('rateLimits'),
+                    'rateLimitsByLimitId': quota.get('rateLimitsByLimitId'),
                     'note': '只读探测成功不代表某个具体任务已可续跑'})
         return
     store = Store(args.state_dir)

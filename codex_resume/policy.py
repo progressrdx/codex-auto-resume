@@ -166,19 +166,29 @@ def numeric(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def quota_status(response, now, limit_id=None):
-    """Return (ready, next_check_epoch, explanation). Always re-read after reset."""
+def select_quota_bucket(response, limit_id=None):
+    """Use the same authoritative bucket for decisions and presentation."""
     buckets = response.get('rateLimitsByLimitId')
     if isinstance(buckets, dict) and buckets:
         if limit_id is None and set(buckets) != {'codex'}:
-            return False, None, '存在多个额度桶；请显式指定 --limit-id'
-        bucket = buckets.get(limit_id or 'codex')
+            return None, None, '存在多个额度桶；请显式指定 --limit-id'
+        selected = limit_id or 'codex'
+        bucket = buckets.get(selected)
     else:
         bucket = response.get('rateLimits')
-        if isinstance(bucket, dict) and limit_id and bucket.get('limitId') != limit_id:
+        selected = bucket.get('limitId') if isinstance(bucket, dict) else None
+        if limit_id and selected != limit_id:
             bucket = None
     if not isinstance(bucket, dict):
-        return False, None, '缺少所选额度桶'
+        return None, None, '缺少所选额度桶'
+    return bucket, selected, None
+
+
+def quota_status(response, now, limit_id=None):
+    """Return (ready, next_check_epoch, explanation). Always re-read after reset."""
+    bucket, _, error = select_quota_bucket(response, limit_id)
+    if error:
+        return False, None, error
     if bucket.get('spendControlReached') or bucket.get('individualLimit') is not None:
         return False, None, '账户还有独立使用限制，需要人工检查'
     reached = bucket.get('rateLimitReachedType')

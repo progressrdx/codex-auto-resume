@@ -11,6 +11,8 @@ import time
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
+from .policy import select_quota_bucket
+
 STATIC = Path(__file__).with_name('static')
 ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
@@ -77,11 +79,12 @@ class Backend:
         with self.quota_lock:
             if self.cached_quota is None or time.monotonic() - self.cached_at >= 45:
                 raw = self.command('doctor')
-                limits = raw.get('rateLimits') or {}
+                limits, limit_id, _ = select_quota_bucket(raw)
+                limits = limits or {}
                 self.cached_quota = {'app': raw['app'], 'ipc': raw['ipc'],
                     'ready': raw['ready'], 'reason': raw['reason'],
                     'primary': limits.get('primary'), 'secondary': limits.get('secondary'),
-                    'limitId': limits.get('limitId'), 'checkedAt': time.time()}
+                    'limitId': limit_id, 'checkedAt': time.time()}
                 self.cached_at = time.monotonic()
             return self.cached_quota
 
