@@ -146,6 +146,8 @@ Windows（PowerShell 或命令提示符）：
 
 `doctor` 只检查 App 版本、本地连接和额度窗口，不会运行模型、选择任务或发送消息。
 
+如果提示版本不支持，运行 `./resume compatibility`（Windows：`.\resume.cmd compatibility`），可在不连接账户或任务的情况下查看安装版本与已验证范围。命令成功只表示生成了诊断报告：`versionVerified: false` 仍会阻止托管；即使为 `true`，也必须继续通过 `doctor` 和所选任务检查。
+
 #### 3. 启动本机界面
 
 macOS：

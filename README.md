@@ -149,6 +149,8 @@ Windows (PowerShell or Command Prompt):
 
 `doctor` is read-only. It checks the App version, local connection, and usage windows without running a model or selecting a task.
 
+If the App version is unsupported, run `./resume compatibility` (Windows: `.\resume.cmd compatibility`) to see the installed version and the verified versions without connecting to accounts or tasks. A successful diagnostic command only means the report was produced: `versionVerified: false` still blocks monitoring. Even `true` requires `doctor` and the selected task check before monitoring.
+
 #### 3. Start the local dashboard
 
 macOS:

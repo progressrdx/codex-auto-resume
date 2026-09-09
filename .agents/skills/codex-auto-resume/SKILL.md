@@ -11,6 +11,7 @@ In the commands below, use `.\resume.cmd` in place of `./resume` when the host i
 
 ## Workflow
 
+- If the App version is unsupported, run `./resume compatibility` (Windows: `.\resume.cmd compatibility`) to inspect local version metadata and verified versions. This does not connect to accounts or tasks. Successful report generation does not mean the App or selected task is ready; retain all version guards.
 - For readiness, run `./resume doctor` on macOS or `.\resume.cmd doctor` on Windows. This is read-only.
 - For existing watcher records, run `./resume status`.
 - List conversations only when the user asks to find or select one. Treat `./resume list` as discovery, never as authorization to manage every result.

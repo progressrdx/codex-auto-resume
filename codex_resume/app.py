@@ -34,7 +34,8 @@ class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
 
-def check_version(app_path, system=None):
+def compatibility_report(app_path, system=None):
+    """Inspect installed metadata without connecting to accounts or conversations."""
     system = system or platform_name()
     if system == 'windows':
         binary = codex_binary(app_path, system)
@@ -47,18 +48,45 @@ def check_version(app_path, system=None):
             app_version = windows_package_version()
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             raise AppError(str(exc) or '无法核验 Windows Codex App 版本') from exc
-        if result.returncode or cli_version not in SUPPORTED_WINDOWS_CLIS or app_version not in SUPPORTED_WINDOWS_APPS:
-            raise AppError('Windows App 版本不在已验证范围内；停止操作，需先适配新版本')
-        return {'platform': 'windows', 'version': app_version, 'cliVersion': cli_version}
+        if result.returncode:
+            raise AppError('无法核验 Windows Codex CLI 版本：版本命令失败')
+        installed = {'platform': 'windows', 'version': app_version, 'cliVersion': cli_version}
+        supported = {'appVersions': sorted(SUPPORTED_WINDOWS_APPS),
+                     'cliVersions': sorted(SUPPORTED_WINDOWS_CLIS)}
+        verified = cli_version in SUPPORTED_WINDOWS_CLIS and app_version in SUPPORTED_WINDOWS_APPS
+        detail = (f'Windows App {app_version} / CLI {cli_version}；已验证 App '
+                  f'{", ".join(supported["appVersions"])} / CLI {", ".join(supported["cliVersions"])}')
+        return _compatibility_result(installed, supported, verified, detail)
     path = Path(app_path)
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
     except (OSError, ValueError) as exc:
         raise AppError('找不到可识别的 Codex App') from exc
+    if not isinstance(info, dict) or info.get('CFBundleIdentifier') != 'com.openai.codex':
+        raise AppError('找不到可识别的 Codex App：应用标识不匹配')
     version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
-    if info.get('CFBundleIdentifier') != 'com.openai.codex' or version not in SUPPORTED_MAC_APPS:
-        raise AppError('App 版本不在已验证范围内；停止操作，需先适配新版本')
-    return {'platform': 'macos', 'version': version[0], 'build': version[1]}
+    if not all(isinstance(value, str) and value for value in version):
+        raise AppError('找不到可识别的 Codex App：版本信息不完整')
+    installed = {'platform': 'macos', 'version': version[0], 'build': version[1]}
+    supported = [{'version': v, 'build': b} for v, b in sorted(SUPPORTED_MAC_APPS)]
+    detail = (f'App {version[0]} / {version[1]}；已验证 '
+              + ', '.join(f'{v} / {b}' for v, b in sorted(SUPPORTED_MAC_APPS)))
+    return _compatibility_result(installed, supported, version in SUPPORTED_MAC_APPS, detail)
+
+
+def _compatibility_result(installed, supported, verified, detail):
+    return {'app': installed, 'supported': supported, 'versionVerified': verified,
+            'reason': detail + ('；版本匹配' if verified else '；版本不在已验证范围内，停止操作'),
+            'nextAction': ('运行 doctor 检查连接和额度，再检查指定任务' if verified else
+                           '需要适配并验证当前 App 协议；版本诊断不会解除续跑保护'),
+            'note': '仅检查本地版本；未检查连接、账户额度或任务状态，也未发送消息'}
+
+
+def check_version(app_path, system=None):
+    report = compatibility_report(app_path, system)
+    if not report['versionVerified']:
+        raise AppError(report['reason'])
+    return report['app']
 
 
 def open_selected_thread(app_path, thread_id, system=None):

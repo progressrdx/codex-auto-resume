@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from .app import Desktop, check_version, open_selected_thread
+from .app import Desktop, check_version, compatibility_report, open_selected_thread
 from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
@@ -37,6 +37,7 @@ def parser():
                    help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径')
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     sub = p.add_subparsers(dest='command', required=True)
+    sub.add_parser('compatibility', help='仅检查本地版本与已验证范围，不连接账户或任务')
     sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
     sub.add_parser('list', help='分页读取所有可用本地对话，包含归档；不会自动托管')
     sub.add_parser('status', help='查看监控记录')
@@ -133,6 +134,9 @@ def serve_watch(args, store):
 def main(argv=None):
     args = parser().parse_args(argv)
     args.home, args.app, args.state_dir = [p.expanduser().absolute() for p in (args.home, args.app, args.state_dir)]
+    if args.command == 'compatibility':
+        output(compatibility_report(args.app))
+        return
     if args.command == 'web':
         from .web import serve
         serve(args)
