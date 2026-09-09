@@ -445,3 +445,7 @@ Codex Auto Resume is available under the [MIT License](LICENSE).
 <p align="center">
   <strong>Keep the work in Codex. Let the waiting happen locally.</strong>
 </p>
+
+### Independent read-only connection probe
+
+Run `./resume probe` (Windows: `.\resume.cmd probe`) to test the official quota-query connection, including on an App version not yet verified for resuming. It does not read conversations, start monitoring or send messages. Success means a quota data container was received, not that quota is available or a task can resume. `resumeVerified` stays false; existing readiness and sending version guards remain in place.

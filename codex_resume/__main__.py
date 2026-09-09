@@ -37,6 +37,7 @@ def parser():
                    help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径')
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     sub = p.add_subparsers(dest='command', required=True)
+    sub.add_parser('probe', help='仅验证官方只读查询连接，不读取任务或解除续跑保护')
     sub.add_parser('compatibility', help='仅检查本地版本与已验证范围，不连接账户或任务')
     sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
     sub.add_parser('list', help='分页读取所有可用本地对话，包含归档；不会自动托管')
@@ -136,6 +137,19 @@ def main(argv=None):
     args.home, args.app, args.state_dir = [p.expanduser().absolute() for p in (args.home, args.app, args.state_dir)]
     if args.command == 'compatibility':
         output(compatibility_report(args.app))
+        return
+    if args.command == 'probe':
+        report = compatibility_report(args.app)
+        with ReadOnlyServer(codex_binary(args.app), args.home) as server:
+            quota = server.query('account/rateLimits/read')
+        if not isinstance(quota, dict) or not any(
+                isinstance(quota.get(key), dict) and quota[key]
+                for key in ('rateLimits', 'rateLimitsByLimitId')):
+            raise RuntimeError('只读连接已响应，但额度数据结构无法识别；不能据此续跑')
+        output({'app': report['app'], 'versionVerified': report['versionVerified'],
+                'readOnlyConnection': 'connected', 'quotaRead': 'received',
+                'appIPC': 'not_checked', 'resumeVerified': False,
+                'note': '已收到官方额度查询响应；没有读取对话、核验可用额度或发送消息。续跑版本保护保持有效。'})
         return
     if args.command == 'web':
         from .web import serve

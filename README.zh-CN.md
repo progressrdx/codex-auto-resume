@@ -182,6 +182,10 @@ Windows：
 
 停止监控只取消未来续跑，不会中断 Codex 中已经运行的工作，也无法撤回 App 已经接受的消息。关闭网页或 Web 服务不会停止已经启动的 watcher。
 
+## 独立只读连接检查
+
+`./resume probe`（Windows：`.\resume.cmd probe`）使用官方查询接口读取额度响应，不读取对话、不启动托管、不发送消息。可在 App 版本尚未通过续跑验证时定位查询连接问题。成功只表示收到可识别的额度数据容器，不判断额度是否可用；`resumeVerified` 始终为 false，`doctor`、任务检查和发送仍保留原版本保护。
+
 ## 命令行使用
 
 下面以 macOS 的 `./resume` 为例。Windows 将每条命令开头替换成 `.\resume.cmd`，其余参数完全相同。
