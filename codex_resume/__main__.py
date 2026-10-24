@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from .app import Desktop, check_version, open_selected_thread
+from .app import AppError, Desktop, check_version, open_selected_thread
 from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
@@ -153,25 +153,50 @@ def main(argv=None):
         from .web import serve
         serve(args)
         return
-    if args.command in ('doctor', 'check', 'list', 'start', '_watch'):
+    if args.command in ('doctor', 'check', 'list'):
+        version = check_version(args.app, allow_unverified=True)
+    elif args.command in ('start', '_watch'):
         version = check_version(args.app)
     if args.command == 'check':
+        if version.get('diagnosticOnly'):
+            # Never navigate, use history to enroll, or interpret unknown state
+            # semantics as permission to monitor/send on an unverified build.
+            try:
+                with Desktop(args.home, args.app, read_only=True) as client:
+                    client.snapshot(args.thread)
+            except (AppError, OSError, TimeoutError) as exc:
+                detail = str(exc) if isinstance(exc, AppError) else '连接不可用或超时'
+                raise AppError(f"{version['compatibilityReason']}；只读检查失败：{detail}") from exc
+            output({'threadId': args.thread, 'app': version, 'source': 'live',
+                    'connection': 'connected', 'decision': 'stop', 'taskState': 'unsupported',
+                    'canMonitor': False, 'autoResumeAllowed': False,
+                    'reason': version['compatibilityReason'], 'checkedAt': time.time(),
+                    'note': '只读快照已收到；未验证任务状态语义及发送协议，没有开启托管或发送消息'})
+            return
         result = inspect_task(args.home, args.app, args.thread)
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
     if args.command in ('doctor', 'list'):
-        with ReadOnlyServer(codex_binary(args.app), args.home) as server:
-            if args.command == 'list':
-                output(list_conversations(server))
-                return
-            with Desktop(args.home, args.app):
-                pass
-            quota = server.query('account/rateLimits/read')
-            ready, next_check, reason = quota_status(quota, time.time())
-            output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
-                    'ready': ready, 'nextCheck': next_check, 'reason': reason,
-                    'rateLimits': quota.get('rateLimits'),
-                    'note': '只读探测成功不代表某个具体任务已可续跑'})
+        try:
+            with ReadOnlyServer(codex_binary(args.app), args.home) as server:
+                if args.command == 'list':
+                    output(list_conversations(server))
+                    return
+                with Desktop(args.home, args.app, read_only=True):
+                    pass
+                quota = server.query('account/rateLimits/read')
+                ready, next_check, reason = quota_status(quota, time.time())
+                output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
+                        'autoResumeAllowed': not version.get('diagnosticOnly', False),
+                        'ready': ready, 'nextCheck': next_check,
+                        'reason': version.get('compatibilityReason', reason), 'quotaReason': reason,
+                        'rateLimits': quota.get('rateLimits'),
+                        'note': '只读探测成功不代表某个具体任务已可续跑'})
+        except (RuntimeError, OSError, TimeoutError) as exc:
+            if version.get('diagnosticOnly'):
+                detail = str(exc) if isinstance(exc, AppError) else '连接或只读查询失败，请检查 App 安装及协议'
+                raise AppError(f"{version['compatibilityReason']}；只读诊断失败：{detail}") from exc
+            raise
         return
     store = Store(args.state_dir)
     try:

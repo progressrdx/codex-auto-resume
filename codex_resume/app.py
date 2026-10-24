@@ -18,8 +18,13 @@ SUPPORTED_MAC_APPS = {
     ('26.820.60940', '7119'),
     ('26.1002.52244', '13536'),
 }
-SUPPORTED_WINDOWS_APPS = {'26.901.31953.0', '26.901.31953'}
-SUPPORTED_WINDOWS_CLIS = {'0.153.1'}
+# Exact pairs, not the Cartesian product of independent App/CLI allowlists.
+# The new pair was checked against the official x64 MSIX; see docs/windows-compatibility.md.
+SUPPORTED_WINDOWS_PAIRS = {
+    ('26.901.31953.0', '0.153.1'),
+    ('26.901.31953', '0.153.1'),
+    ('26.1021.3705.0', '0.164.0-alpha.11.1'),
+}
 MAX_FRAME = 32 * 1024 * 1024
 CONTINUATION = ('额度恢复后，请继续本会话原有的未完成工作。先核对当前进度与工作区，'
                 '不要重复已完成步骤，不扩大范围，不绕过审批。若工作已经完成或需要用户决定，请明确说明并停止。')
@@ -37,7 +42,17 @@ class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
 
-def check_version(app_path, system=None):
+def check_version(app_path, system=None, *, allow_unverified=False):
+    """Unknown builds may be inspected, never implicitly authorized to send."""
+    def assessed(info, verified):
+        if verified:
+            return info
+        detail = ', '.join(f'{key}={value}' for key, value in info.items())
+        reason = f'App/CLI 组合未经续跑验证（{detail}）；仅允许只读诊断，禁止自动续跑'
+        if not allow_unverified:
+            raise AppError(reason)
+        return dict(info, diagnosticOnly=True, compatibilityReason=reason)
+
     system = system or platform_name()
     if system == 'windows':
         binary = codex_binary(app_path, system)
@@ -50,18 +65,20 @@ def check_version(app_path, system=None):
             app_version = windows_package_version()
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             raise AppError(str(exc) or '无法核验 Windows Codex App 版本') from exc
-        if result.returncode or cli_version not in SUPPORTED_WINDOWS_CLIS or app_version not in SUPPORTED_WINDOWS_APPS:
-            raise AppError('Windows App 版本不在已验证范围内；停止操作，需先适配新版本')
-        return {'platform': 'windows', 'version': app_version, 'cliVersion': cli_version}
+        if result.returncode or not cli_version:
+            raise AppError('无法读取 Windows App 内置 CLI 版本；请检查安装是否完整')
+        return assessed({'platform': 'windows', 'version': app_version, 'cliVersion': cli_version},
+                        (app_version, cli_version) in SUPPORTED_WINDOWS_PAIRS)
     path = Path(app_path)
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
     except (OSError, ValueError) as exc:
         raise AppError('找不到可识别的 Codex App') from exc
     version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
-    if info.get('CFBundleIdentifier') != 'com.openai.codex' or version not in SUPPORTED_MAC_APPS:
-        raise AppError('App 版本不在已验证范围内；停止操作，需先适配新版本')
-    return {'platform': 'macos', 'version': version[0], 'build': version[1]}
+    if info.get('CFBundleIdentifier') != 'com.openai.codex' or not all(isinstance(v, str) and v for v in version):
+        raise AppError('找不到可识别的 Codex App 身份或完整版本信息')
+    return assessed({'platform': 'macos', 'version': version[0], 'build': version[1]},
+                    version in SUPPORTED_MAC_APPS)
 
 
 def open_selected_thread(app_path, thread_id, system=None):
@@ -153,10 +170,11 @@ class WindowsPipe:
 
 class Desktop:
     def __init__(self, home, app_path='/Applications/ChatGPT.app', timeout=12, system=None,
-                 transport_factory=None):
+                 transport_factory=None, read_only=False):
         self.home, self.app_path, self.timeout = Path(home), Path(app_path), timeout
         self.system = system or platform_name()
         self.transport_factory = transport_factory
+        self.read_only = read_only
         self.app_info = None
         self.sock = None
         self.client_id = 'initializing-client'
@@ -167,7 +185,8 @@ class Desktop:
         self.state_generation = 0
 
     def __enter__(self):
-        self.app_info = check_version(self.app_path, self.system)
+        self.app_info = (check_version(self.app_path, self.system, allow_unverified=True)
+                         if self.read_only else check_version(self.app_path, self.system))
         if self.system == 'windows':
             self.sock = (self.transport_factory or WindowsPipe)(WINDOWS_PIPE, self.timeout)
             try:
@@ -203,6 +222,14 @@ class Desktop:
         self.close()
 
     def _send(self, msg):
+        if self.read_only:
+            kind, method = msg.get('type'), msg.get('method')
+            allowed = ((kind == 'request' and method in ('initialize', 'thread-owner-discovery'))
+                       or (kind == 'broadcast' and method == 'thread-stream-following-changed')
+                       or kind == 'client-discovery-response'
+                       or (kind == 'response' and msg.get('resultType') == 'error'))
+            if not allowed:
+                raise AppError('只读诊断连接禁止发送任务操作')
         data = json.dumps(msg, ensure_ascii=False).encode()
         if not 0 < len(data) <= MAX_FRAME:
             raise AppError('IPC 消息过大')
@@ -296,11 +323,14 @@ class Desktop:
         state = self.snapshot_value
         if not isinstance(state, dict) or state.get('id') != self.thread_id:
             raise AppError('App 返回了不匹配的任务状态')
-        # This build copies the optional thread.ephemeral into its snapshot.
+        # These inspected builds copy optional thread.ephemeral into snapshots.
         # JSON omits undefined; its isEphemeralConversation uses === true.
-        # Normalize only this verified build; the policy remains fail-closed
+        # Normalize only these inspected profiles; the policy stays fail-closed
         # for missing fields from other versions and for explicit null/true.
-        if (self.app_info == {'platform': 'macos', 'version': '26.1002.52244', 'build': '13536'}
+        if (self.app_info in (
+                {'platform': 'macos', 'version': '26.1002.52244', 'build': '13536'},
+                {'platform': 'windows', 'version': '26.1021.3705.0',
+                 'cliVersion': '0.164.0-alpha.11.1'})
                 and 'ephemeral' not in state):
             state = dict(state, ephemeral=False)
         return state
@@ -321,7 +351,13 @@ class Desktop:
         raise AppError('App 状态仍在变化；取消本次续跑')
 
     def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
-        check_version(self.app_path, self.system)  # Stop if the app updated while we were waiting.
+        if self.read_only:
+            raise AppError('只读诊断连接禁止自动续跑')
+        current_app = check_version(self.app_path, self.system)
+        # Even two supported builds must not share an already-open connection:
+        # the state normalization belongs to the build used at initialization.
+        if self.app_info is not None and current_app != self.app_info:
+            raise AppError('App/CLI 在连接期间已更新；取消本次续跑，请重新连接')
         state = self.snapshot(thread_id)
         if decide(state).action != 'resume' or fingerprint(state) != expected_fingerprint:
             raise AppError('发送前任务状态已改变；取消本次续跑')

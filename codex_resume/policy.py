@@ -117,6 +117,10 @@ def decide(state):
         return Decision('stop', '任务目标已暂停、受阻或结束', task_state='needs_attention')
     if state.get('queuedFollowUps'):
         return Decision('stop', '已有用户排队消息', task_state='needs_attention')
+    # New Desktop builds preserve uncertain submissions separately from turns.
+    # The App itself refuses a start while any earlier submission is present.
+    if state.get('unconfirmedTurnSubmissions'):
+        return Decision('stop', 'App 存在尚未确认的发送；请先在原对话确认', task_state='needs_attention')
     runtime = state.get('threadRuntimeStatus')
     if not isinstance(runtime, dict):
         return Decision('stop', '缺少运行状态')
@@ -156,7 +160,8 @@ def fingerprint(state):
     keys = ('id', 'hostId', 'cwd', 'latestModel', 'latestReasoningEffort',
             'latestCollaborationMode', 'currentPermissions', 'latestThreadSettings',
             'threadGoal', 'threadGoalResumeConfirmation', 'requests', 'queuedFollowUps',
-            'threadRuntimeStatus', 'resumeState')
+            'threadRuntimeStatus', 'resumeState', 'unconfirmedTurnSubmissions',
+            'environments', 'environmentSelectionEvidence', 'threadAccess')
     data = {k: state.get(k) for k in keys}
     data['turn'] = latest_turn(state)
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

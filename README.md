@@ -65,12 +65,21 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - Python 3.9 or newer
 - The Codex desktop app installed, signed in, and kept open
 - Adapted macOS App versions: `26.820.60940 / build 7119`, `26.1002.52244 / build 13536`
-- Currently adapted Windows versions: App `26.901.31953.0`, CLI `0.153.1`
+- Adapted Windows App/CLI pairs: `26.901.31953.0` / `0.153.1`, `26.1021.3705.0` / `0.164.0-alpha.11.1`
 - Default path: macOS `/Applications/ChatGPT.app`; Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
 
 Run the Windows version from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
 
-Unsupported App versions are rejected instead of silently using an unverified internal protocol.
+Unverified App/CLI versions may run `doctor`, `list`, and a read-only `check`.
+Diagnostics report the detected version and whether it is verified for automation.
+A successful connection or quota query does **not** validate the send protocol.
+For unverified builds, `check` never opens a conversation or enables monitoring;
+unknown snapshot protocols still fail closed. `start`, background watchers, and
+every actual continuation retain the strict version guard. There is no force-send
+override. The newer Windows pair is enabled after static inspection of the official
+x64 package and offline protocol regressions; **native Windows sending and natural
+reset validation have not been repeated for this pair**. Previous Windows end-to-end
+results apply to the older pair only. See [Windows compatibility evidence](docs/windows-compatibility.md).
 
 ### Let Codex start it for you (recommended for beginners)
 
@@ -325,7 +334,7 @@ Validated on a real Windows 11 machine with the Codex desktop App signed in to a
 Current automated suite:
 
 ```text
-Python tests: 108 total (107 passed locally; 1 Windows-only launcher test skipped)
+Python tests: 135 total (134 passed locally; 1 Windows-only launcher test skipped)
 Browser UI tests: 26 passed
 Runtime dependencies: 0
 ```

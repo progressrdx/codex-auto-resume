@@ -64,12 +64,17 @@
 - Python 3.9 或更高版本
 - 已安装、登录并保持打开的 Codex 桌面 App
 - macOS 当前适配版本：`26.820.60940 / build 7119`、`26.1002.52244 / build 13536`
-- Windows 当前适配版本：App `26.901.31953.0`、CLI `0.153.1`
+- Windows 已适配 App/CLI 组合：`26.901.31953.0` / `0.153.1`、`26.1021.3705.0` / `0.164.0-alpha.11.1`
 - 默认路径：macOS `/Applications/ChatGPT.app`；Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
 
 Windows 版请在 Windows 原生 PowerShell 或命令提示符中运行，不要放到 WSL 里运行。本工具需要连接 Windows Codex App 的本机命名管道。Codex 官方 Windows App 本身支持原生 Windows 和可选 WSL 工作区，但这是两个不同的运行环境。
 
-遇到未验证的 App 版本时，工具会拒绝运行，而不是猜测内部协议。
+未知 App/CLI 组合允许执行 `doctor`、`list` 和只读 `check`，但禁止启动托管或发送续跑消息。
+只读检查通过不代表发送协议已经适配；未知状态协议仍会拒绝解析，没有强制发送开关。
+
+新增 Windows 组合已根据官方 x64 安装包完成静态协议核对与离线回归，并启用适配；
+**尚未在该组合上重做 Windows 真机发送与自然额度重置测试**。此前 Windows 端到端验证
+仅对应旧组合。详见[Windows 适配证据与验证边界](docs/windows-compatibility.md)。
 
 ### 让 Codex 帮你启动（新手推荐）
 
@@ -320,7 +325,7 @@ Windows 对应命令为 `git pull`、`.\resume.cmd doctor`、`.\resume.cmd web`�
 当前自动化测试：
 
 ```text
-Python：108 项（本机 107 项通过，1 项 Windows 专用启动器测试跳过）
+Python：135 项（本机 134 项通过，1 项 Windows 专用启动器测试跳过）
 浏览器 UI：26 项通过
 运行时第三方依赖：0
 ```
