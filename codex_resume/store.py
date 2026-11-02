@@ -145,6 +145,12 @@ class Store:
 
         This read is deliberately next to the adapter's network write, after its
         potentially slow fresh snapshot. It cannot make the App write atomic.
+
+        Uses <= max_resumes because claim() already INSERTed this attempt before
+        can_dispatch is called, so count equals max_resumes at the budget boundary.
+        The claim() gate (>= max_resumes → abort) already prevents over-insertion;
+        this guard focuses on cancellation and state validity, not re-checking the
+        budget limit.
         """
         row = self.db.execute('''SELECT 1 FROM watches w JOIN attempts a
             ON a.thread_id=w.thread_id WHERE w.thread_id=? AND w.enabled=1

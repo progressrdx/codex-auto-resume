@@ -257,6 +257,17 @@ class PolicyTests(unittest.TestCase):
         q = quota(); q['rateLimitsByLimitId']['codex']['spendControlReached'] = True
         self.assertEqual(quota_status(q, 1000)[:2], (False, None))
 
+    def test_stale_quota_below_limit_returns_retry(self):
+        # A stale reset timestamp should produce a retry, not a permanent block.
+        ready, when, _ = quota_status(quota(reset=900), 1000, stale_count=0)
+        self.assertFalse(ready); self.assertIsNotNone(when)
+
+    def test_stale_quota_at_limit_returns_permanent_block(self):
+        # After 60 consecutive stale results, give up and return a permanent block.
+        ready, when, reason = quota_status(quota(reset=900), 1000, stale_count=60)
+        self.assertFalse(ready); self.assertIsNone(when)
+        self.assertIn('时钟', reason)
+
 
 class TaskDiscoveryTests(unittest.TestCase):
     def stored(self, status='completed', error=None):

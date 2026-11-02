@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 
+from . import __version__
 from .runtime import platform_name
 
 
@@ -48,7 +49,7 @@ class ReadOnlyServer:
             self.selector = selectors.DefaultSelector()
             self.selector.register(self.process.stdout, selectors.EVENT_READ)
         try:
-            self._request('initialize', {'clientInfo': {'name': 'codex_auto_resume', 'version': '0.1.0'}})
+            self._request('initialize', {'clientInfo': {'name': 'codex_auto_resume', 'version': __version__}})
             self._send({'method': 'initialized'})
             return self
         except Exception:

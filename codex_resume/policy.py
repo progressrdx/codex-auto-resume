@@ -171,8 +171,14 @@ def numeric(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def quota_status(response, now, limit_id=None):
-    """Return (ready, next_check_epoch, explanation). Always re-read after reset."""
+def quota_status(response, now, limit_id=None, stale_count=0):
+    """Return (ready, next_check_epoch, explanation). Always re-read after reset.
+
+    stale_count tracks consecutive 'data already expired' results so the caller
+    can detect persistent clock skew (local clock ahead of server) and stop
+    waiting instead of looping indefinitely.
+    """
+    _MAX_STALE = 60  # ~1 hour of 60-second retries before giving up
     buckets = response.get('rateLimitsByLimitId')
     if isinstance(buckets, dict) and buckets:
         if limit_id is None and set(buckets) != {'codex'}:
@@ -204,6 +210,11 @@ def quota_status(response, now, limit_id=None):
         if used >= 100:
             exhausted.append(reset)
         elif reset <= now:
+            if stale_count >= _MAX_STALE:
+                return False, None, (
+                    f'额度数据已连续 {stale_count} 次显示过期（本地时钟可能比服务器快）；'
+                    '请校准系统时钟后重新启动监控'
+                )
             return False, now + 60, '额度数据已过期，稍后重新读取'
     if exhausted:
         return False, max(now + 60, max(exhausted) + 15), '额度仍不足，等待实际重置后再检查'

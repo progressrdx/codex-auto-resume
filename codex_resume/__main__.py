@@ -36,6 +36,8 @@ def parser():
     p.add_argument('--app', type=Path, default=default_app_path(),
                    help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径')
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
+    p.add_argument('--list-timeout', type=int, default=55,
+                   help='读取对话列表的最长秒数（默认 55；账号对话超多时可适当调大）')
     sub = p.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor', help='只读检查 App 版本、连接和真实额度')
     sub.add_parser('list', help='分页读取所有可用本地对话，包含归档；不会自动托管')
@@ -73,16 +75,75 @@ def watch_process_spec(args, lock_fd=None):
 
 
 def notify_user(thread_id, status, reason):
+    """Cross-platform user notification. Never raises; notification is best-effort."""
     title = 'Codex Auto Resume 需要确认'
     body = f'{status}: {reason} ({thread_id})'
+    system = platform_name()
     try:
-        subprocess.run(['/usr/bin/osascript',
-                        '-e', 'on run argv',
-                        '-e', 'display notification (item 2 of argv) with title (item 1 of argv)',
-                        '-e', 'end run',
-                        title, body],
-                       check=False, timeout=5, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if system == 'windows':
+            # Try PowerShell toast notification; fall back to the legacy console msg.
+            shell = None
+            import shutil
+            shell = shutil.which('powershell.exe') or shutil.which('pwsh.exe')
+            if shell:
+                script = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "$n = New-Object System.Windows.Forms.NotifyIcon; "
+                    "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+                    "$n.Visible = $true; "
+                    f"$n.ShowBalloonTip(8000, '{title}', '{body}', "
+                    "[System.Windows.Forms.ToolTipIcon]::Warning); "
+                    "Start-Sleep -Seconds 9; $n.Dispose()"
+                )
+                subprocess.run(
+                    [shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+                    check=False, timeout=12, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # msg.exe: visible only when the user is logged in on the console session.
+                subprocess.run(['msg', '*', f'{title}\n{body}'],
+                               check=False, timeout=5, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(['/usr/bin/osascript',
+                            '-e', 'on run argv',
+                            '-e', 'display notification (item 2 of argv) with title (item 1 of argv)',
+                            '-e', 'end run',
+                            title, body],
+                           check=False, timeout=5, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+_LOG_MAX_BYTES = 2 * 1024 * 1024   # rotate when log exceeds 2 MB
+_LOG_KEEP_BYTES = 512 * 1024        # keep the most-recent 512 KB after rotation
+
+
+def _rotate_log_if_needed(log_path):
+    """Trim the log file in-place when it exceeds _LOG_MAX_BYTES.
+
+    Keeps the tail (_LOG_KEEP_BYTES) so recent context is always available.
+    Rotation happens before the child process is launched so the child always
+    starts with a reasonable-sized file. Failures are ignored; logs are
+    diagnostic only and must never affect the safety flow.
+    """
+    try:
+        path = log_path if isinstance(log_path, Path) else Path(log_path)
+        if path.is_symlink():
+            return
+        size = path.stat().st_size if path.exists() else 0
+        if size <= _LOG_MAX_BYTES:
+            return
+        with open(path, 'rb') as f:
+            f.seek(-_LOG_KEEP_BYTES, 2)
+            tail = f.read(_LOG_KEEP_BYTES)
+        header = (
+            b'[log rotated: file exceeded 2 MB; keeping most recent 512 KB]\n'
+        )
+        with open(path, 'wb') as f:
+            f.write(header)
+            f.write(tail)
     except Exception:
         pass
 
@@ -173,14 +234,14 @@ def main(argv=None):
                     'reason': version['compatibilityReason'], 'checkedAt': time.time(),
                     'note': '只读快照已收到；未验证任务状态语义及发送协议，没有开启托管或发送消息'})
             return
-        result = inspect_task(args.home, args.app, args.thread)
+        result = inspect_task(args.home, args.app, args.thread, list_timeout=args.list_timeout)
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
     if args.command in ('doctor', 'list'):
         try:
             with ReadOnlyServer(codex_binary(args.app), args.home) as server:
                 if args.command == 'list':
-                    output(list_conversations(server))
+                    output(list_conversations(server, timeout=args.list_timeout))
                     return
                 with Desktop(args.home, args.app, read_only=True):
                     pass
@@ -215,7 +276,8 @@ def main(argv=None):
             serve_watch(args, store)
         elif args.command == 'start':
             # Validate the exact thread before arming a background process.
-            assessment = inspect_task(args.home, args.app, args.thread)
+            assessment = inspect_task(args.home, args.app, args.thread,
+                                      list_timeout=args.list_timeout)
             if not assessment['canMonitor']:
                 raise RuntimeError(assessment['reason'])
             if store.uncertain(args.thread):
@@ -236,6 +298,7 @@ def main(argv=None):
             try:
                 if log.is_symlink():
                     raise RuntimeError('拒绝使用符号链接日志文件')
+                _rotate_log_if_needed(log)
                 flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
                 fd = os.open(log, flags, 0o600)
                 with os.fdopen(fd, 'ab') as stream:

@@ -16,10 +16,14 @@ LIVE_REOPEN_TIMEOUT = 5.0
 LIVE_REOPEN_ATTEMPT_TIMEOUT = 0.75
 
 
-def list_conversations(server, archive_filters=(False, True)):
-    """Consume all pages, including archives; don't silently return only page one."""
+def list_conversations(server, archive_filters=(False, True), timeout=55):
+    """Consume all pages, including archives; don't silently return only page one.
+
+    timeout: total seconds allowed for all pages across all archive filters.
+    Callers with large accounts can raise this via --list-timeout.
+    """
     rows, ids = [], set()
-    deadline = time.monotonic() + 55
+    deadline = time.monotonic() + timeout
     for archived in archive_filters:
         cursor, seen = None, set()
         while True:
@@ -100,12 +104,12 @@ def live_assessment(home, app_path, thread_id, timeout=None):
                 for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
 
 
-def inspect_task(home, app_path, thread_id):
+def inspect_task(home, app_path, thread_id, list_timeout=55):
     thread_id = str(uuid.UUID(thread_id))
     # Archiving is a user stop signal, even if the last persisted turn was still
     # in progress. Never navigate to or enroll an archived conversation.
     with ReadOnlyServer(codex_binary(app_path), home) as server:
-        archived = next((r for r in list_conversations(server, (True,)) if r['id'] == thread_id), None)
+        archived = next((r for r in list_conversations(server, (True,), timeout=list_timeout) if r['id'] == thread_id), None)
     if archived:
         return {'threadId': thread_id, 'title': archived.get('name') or archived.get('preview'),
                 'decision': 'stop', 'canMonitor': False, 'taskState': 'archived',

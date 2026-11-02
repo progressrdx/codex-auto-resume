@@ -26,8 +26,16 @@ SUPPORTED_WINDOWS_PAIRS = {
     ('26.1021.3705.0', '0.164.0-alpha.11.1'),
 }
 MAX_FRAME = 32 * 1024 * 1024
-CONTINUATION = ('额度恢复后，请继续本会话原有的未完成工作。先核对当前进度与工作区，'
-                '不要重复已完成步骤，不扩大范围，不绕过审批。若工作已经完成或需要用户决定，请明确说明并停止。')
+# Bilingual so the model handles both Chinese and English conversations correctly.
+CONTINUATION = (
+    '额度恢复后，请继续本会话原有的未完成工作。先核对当前进度与工作区，'
+    '不要重复已完成步骤，不扩大范围，不绕过审批。若工作已经完成或需要用户决定，请明确说明并停止。\n\n'
+    'Your usage limit has reset. Please continue the original unfinished work in this session. '
+    'First review the current progress and workspace, do not repeat completed steps, '
+    'do not expand scope, and do not bypass approvals. '
+    'If the work is already done or requires a user decision, state that clearly and stop.'
+)
+_VERSION_ISSUE_URL = 'https://github.com/progressrdx/codex-auto-resume/issues'
 
 
 class AppError(RuntimeError):
@@ -48,7 +56,10 @@ def check_version(app_path, system=None, *, allow_unverified=False):
         if verified:
             return info
         detail = ', '.join(f'{key}={value}' for key, value in info.items())
-        reason = f'App/CLI 组合未经续跑验证（{detail}）；仅允许只读诊断，禁止自动续跑'
+        reason = (
+            f'App/CLI 组合未经续跑验证（{detail}）；仅允许只读诊断，禁止自动续跑。\n'
+            f'如需适配此版本，请在 {_VERSION_ISSUE_URL} 提交 Issue，附上 App 版本和 build 号。'
+        )
         if not allow_unverified:
             raise AppError(reason)
         return dict(info, diagnosticOnly=True, compatibilityReason=reason)

@@ -18,6 +18,7 @@ class Controller:
         self.open_thread = open_thread
         self.next_open = 0
         self.notify = notify or (lambda _status, _reason: None)
+        self._stale_count = 0  # consecutive 'quota data already expired' results
 
     def step(self):
         watch = self.store.get(self.thread_id)
@@ -53,11 +54,17 @@ class Controller:
                     self.store.update(self.thread_id, 'waiting_quota', '等待额度重置；期间仍检查任务是否被停止', only_enabled=True)
                     return True
                 stage = 'quota'
-                ready, next_check, reason = quota_status(self.quota_reader(), self.clock(), self.limit_id)
+                ready, next_check, reason = quota_status(self.quota_reader(), self.clock(), self.limit_id,
+                                                         stale_count=self._stale_count)
                 self.failures = 0
                 if not ready:
                     if next_check is None:
                         return self.end('blocked', reason)
+                    # Track consecutive stale results to detect persistent clock skew.
+                    if '已过期' in reason:
+                        self._stale_count += 1
+                    else:
+                        self._stale_count = 0
                     self.next_quota_check = next_check
                     self.store.update(self.thread_id, 'waiting_quota', reason, only_enabled=True)
                     return True

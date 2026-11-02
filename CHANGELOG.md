@@ -1,5 +1,19 @@
 # 版本记录
 
+## 0.3.4-dev — 健壮性与可用性优化（进行中）
+
+- **RPC 握手版本号修正**：`clientInfo.version` 改为读取包实际版本（`__version__`），不再固定声明 `0.1.0`。
+- **续跑文案中英双语**：`CONTINUATION` 常量增加英文段落，让英文 Codex 会话的续跑提示语上下文一致。
+- **版本被拒时附带 Issue 链接**：`check_version` 的错误消息现在包含 GitHub Issues 地址，引导用户提交适配请求。
+- **Windows 系统通知**：`notify_user` 在 Windows 上优先使用 PowerShell System.Windows.Forms 弹窗，回退到 `msg.exe`，不再只支持 macOS osascript。
+- **日志文件轮转**：启动子进程前检查日志文件大小，超过 2 MB 时保留最近 512 KB 并截断，避免长期运行时日志无限增长。
+- **`list` / `check` / `start` 命令新增 `--list-timeout` 参数**：默认 55 秒，对话数量多的账号可手动调大，不再硬编码。
+- **`quota_status` 时钟漂移防护**：新增 `stale_count` 参数；连续 60 次"额度数据已过期"后返回永久阻塞并附带时钟校准提示，避免本地时钟超前时陷入无限重试循环。
+- **`controller.py` 追踪连续过期次数**：每次 `quota_status` 返回"已过期"时递增 `_stale_count`，其他结果时清零。
+- **`can_dispatch` 注释澄清**：明确说明 `<=` 而非 `<` 的原因（`claim` INSERT 后 count 等于 max_resumes 时仍应放行）。
+- 新增 2 项 `quota_status` 隔离测试：验证漂移防护在阈值前后的行为。
+- Python 回归 137 项（136 通过，1 项 Windows 专用启动器测试跳过），前端回归 26 项通过。
+
 ## 0.3.3 — 新版 Windows 精确适配与只读诊断（2026-10-25）
 
 - 新增 Windows Codex App `26.1021.3705.0` / CLI `0.164.0-alpha.11.1` 精确组合适配，依据官方 x64 MSIX 包完成静态协议核对；不取消版本保护，不允许新旧 App/CLI 交叉组合发送。
