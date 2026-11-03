@@ -89,14 +89,83 @@ class CurrentWindowsTests(unittest.TestCase):
                       return_value=CompletedProcess([], 0, f'codex-cli {cli}\n', '')):
             return check_version(binary, 'windows')
 
-    def test_only_inspected_app_cli_pair_is_supported(self):
+    def test_app_cli_metadata_has_no_exact_pair_allowlist(self):
         with tempfile.TemporaryDirectory() as root:
             self.assertEqual(self.version(root), INFO)
             self.assertEqual(self.version(root, '26.901.31953.0', '0.153.1')['cliVersion'], '0.153.1')
             for app, cli in ((APP, '0.153.1'), ('26.901.31953.0', CLI),
                              ('26.1021.3706.0', CLI), (APP, CLI + '.2')):
-                with self.subTest(app=app, cli=cli), self.assertRaises(AppError):
-                    self.version(root, app, cli)
+                with self.subTest(app=app, cli=cli):
+                    self.assertEqual(self.version(root, app, cli),
+                                     {'platform':'windows', 'version':app, 'cliVersion':cli})
+
+    @patch('codex_resume.app.check_version', return_value={
+        'platform':'windows', 'version':'99.0.0.0', 'cliVersion':'99.0'})
+    def test_future_version_can_resume_with_complete_compatible_state(self, version):
+        with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+            state = app.snapshot(THREAD)
+            self.assertEqual(decide(state).action, 'resume')
+            self.assertEqual(app.resume(THREAD, fingerprint(state), 'future-message'), 'new-turn')
+            sent = [m for m in app.sock.messages if m['method'] == 'thread-follower-start-turn']
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0]['params']['conversationId'], THREAD)
+
+    @patch('codex_resume.app.check_version', return_value={
+        'platform':'windows', 'version':'99.0.0.0', 'cliVersion':'99.0'})
+    def test_future_version_missing_state_cannot_send(self, version):
+        with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+            del app.sock.state['requests']
+            state = app.snapshot(THREAD)
+            self.assertEqual(decide(state).action, 'stop')
+            with self.assertRaises(AppError):
+                app.resume(THREAD, fingerprint(state), 'blocked-message')
+            self.assertFalse(any(m['method'] == 'thread-follower-start-turn' for m in app.sock.messages))
+
+    @patch('codex_resume.app.check_version', return_value={
+        'platform':'windows', 'version':'99.0.0.0', 'cliVersion':'99.0'})
+    def test_future_version_changed_protocol_cannot_send(self, version):
+        with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+            app.sock.state_version = 12
+            with self.assertRaisesRegex(AppError, '协议'):
+                app.snapshot(THREAD)
+            self.assertFalse(any(m['method'] == 'thread-follower-start-turn' for m in app.sock.messages))
+
+    def test_latest_releases_resume_with_omitted_optional_field(self):
+        # Offline framing simulation for both profiles, not native App execution.
+        for info in (
+            {'platform':'windows', 'version':'26.1027.6604.0', 'cliVersion':'not-executed'},
+            {'platform':'macos', 'version':'26.1027.61615', 'build':'24141'},
+        ):
+            with self.subTest(info=info), patch('codex_resume.app.check_version', return_value=info):
+                with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+                    self.assertNotIn('ephemeral', app.sock.state)
+                    state = app.snapshot(THREAD)
+                    self.assertIs(state['ephemeral'], False)
+                    self.assertEqual(app.resume(THREAD, fingerprint(state), 'latest-message'), 'new-turn')
+                    sent = [m for m in app.sock.messages if m['method'] == 'thread-follower-start-turn']
+                    self.assertEqual(len(sent), 1)
+                    self.assertEqual(sent[0]['params']['conversationId'], THREAD)
+
+    @patch('codex_resume.app.check_version', return_value={
+        'platform':'windows', 'version':'99.0.0.0', 'cliVersion':'99.0'})
+    def test_optional_field_does_not_exempt_required_state_or_temporary_threads(self, version):
+        for field in ('hostId', 'resumeState', 'requests', 'turnHistory'):
+            with self.subTest(missing=field):
+                with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+                    del app.sock.state[field]
+                    state = app.snapshot(THREAD)
+                    self.assertNotEqual(decide(state).action, 'resume')
+                    with self.assertRaises(AppError):
+                        app.resume(THREAD, 'unused-for-rejected-state', 'unsafe-message')
+                    self.assertFalse(any(m['method'] == 'thread-follower-start-turn' for m in app.sock.messages))
+        for value in (True, None, 0, 'false'):
+            with self.subTest(ephemeral=value):
+                with Desktop('/unused', system='windows', transport_factory=ScriptedPipe) as app:
+                    app.sock.state['ephemeral'] = value
+                    state = app.snapshot(THREAD)
+                    with self.assertRaises(AppError):
+                        app.resume(THREAD, 'unused-for-rejected-state', 'unsafe-message')
+                    self.assertFalse(any(m['method'] == 'thread-follower-start-turn' for m in app.sock.messages))
 
     @patch('codex_resume.app.check_version', return_value=INFO)
     def test_full_exchange_preserves_original_thread_and_start_contract(self, version):

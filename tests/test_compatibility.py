@@ -15,39 +15,32 @@ from codex_resume.__main__ import main
 
 
 THREAD = '11111111-1111-4111-8111-111111111111'
-# Deliberately mismatched new App / stale relocated CLI, not the supported pair.
+# Deliberately mismatched App/CLI metadata; runtime checks decide compatibility.
 UNKNOWN = {'platform': 'windows', 'version': '26.1021.3705.0',
-           'cliVersion': '0.153.1', 'diagnosticOnly': True,
-           'compatibilityReason': '未经续跑验证，仅允许只读诊断'}
+           'cliVersion': '0.153.1'}
 
 
 class VersionDiagnosticsTests(unittest.TestCase):
     @patch('codex_resume.app.windows_package_version', return_value='26.1021.3705.0')
     @patch('codex_resume.app.subprocess.run')
-    def test_new_windows_app_with_stale_cli_is_diagnostic_only(self, run, package):
+    def test_new_windows_app_with_stale_cli_is_not_version_blocked(self, run, package):
         run.return_value = CompletedProcess([], 0, 'codex-cli 0.153.1\n', '')
         with tempfile.TemporaryDirectory() as root:
             binary = Path(root) / 'codex.exe'
             binary.touch()
-            info = check_version(binary, 'windows', allow_unverified=True)
-            self.assertTrue(info['diagnosticOnly'])
-            self.assertEqual(info['version'], '26.1021.3705.0')
-            with self.assertRaisesRegex(AppError, '26.1021.3705.0'):
-                check_version(binary, 'windows')
+            self.assertEqual(check_version(binary, 'windows'), UNKNOWN)
 
     @patch('codex_resume.app.windows_package_version', return_value='26.901.31953.0')
     @patch('codex_resume.app.subprocess.run')
-    def test_unknown_cli_stays_diagnostic_and_failed_cli_is_not_accepted(self, run, package):
+    def test_unknown_cli_is_allowed_but_failed_cli_is_not_accepted(self, run, package):
         with tempfile.TemporaryDirectory() as root:
             binary = Path(root) / 'codex.exe'
             binary.touch()
             run.return_value = CompletedProcess([], 0, 'codex-cli 99.0.0\n', '')
-            self.assertTrue(check_version(binary, 'windows', allow_unverified=True)['diagnosticOnly'])
-            with self.assertRaisesRegex(AppError, '99.0.0'):
-                check_version(binary, 'windows')
+            self.assertEqual(check_version(binary, 'windows')['cliVersion'], '99.0.0')
             run.return_value = CompletedProcess([], 1, 'codex-cli 0.153.1\n', '')
             with self.assertRaises(AppError):
-                check_version(binary, 'windows', allow_unverified=True)
+                check_version(binary, 'windows')
 
     def test_macos_unknown_build_and_identity_checks(self):
         with tempfile.TemporaryDirectory() as root:
@@ -57,13 +50,11 @@ class VersionDiagnosticsTests(unittest.TestCase):
                     'CFBundleShortVersionString': '26.1002.52244', 'CFBundleVersion': '99999'}
             manifest = contents / 'Info.plist'
             manifest.write_bytes(plistlib.dumps(info))
-            self.assertTrue(check_version(root, 'macos', allow_unverified=True)['diagnosticOnly'])
-            with self.assertRaisesRegex(AppError, '99999'):
-                check_version(root, 'macos')
+            self.assertEqual(check_version(root, 'macos')['build'], '99999')
             for bad in ({'CFBundleIdentifier': 'other.app'}, {'CFBundleVersion': ''}):
                 manifest.write_bytes(plistlib.dumps(dict(info, **bad)))
                 with self.assertRaises(AppError):
-                    check_version(root, 'macos', allow_unverified=True)
+                    check_version(root, 'macos')
 
 
 class ReadOnlyTransportTests(unittest.TestCase):
@@ -112,8 +103,8 @@ class ReadOnlyTransportTests(unittest.TestCase):
             binary.touch()
             with Desktop(root, binary, system='windows', read_only=True,
                          transport_factory=SimulatedPipe) as app:
-                self.assertTrue(app.app_info['diagnosticOnly'])
-                self.assertEqual(app.snapshot(THREAD), {'id': THREAD})
+                self.assertEqual(app.app_info, UNKNOWN)
+                self.assertEqual(app.snapshot(THREAD), {'id': THREAD, 'ephemeral': False})
                 self.assertTrue(app.sock.assert_size)
                 self.assertEqual([m['method'] for m in app.sock.messages],
                                  ['initialize', 'thread-owner-discovery',
@@ -174,37 +165,35 @@ class DiagnosticCommandTests(unittest.TestCase):
         server.return_value.__enter__.return_value.query.return_value = {}
         result = self.invoke('doctor')
         self.assertEqual(result['ipc'], 'connected')
-        self.assertFalse(result['autoResumeAllowed'])
+        self.assertTrue(result['autoResumeAllowed'])
         self.assertEqual(result['app']['version'], UNKNOWN['version'])
-        self.assertEqual(result['reason'], UNKNOWN['compatibilityReason'])
+        self.assertIn('不代表', result['note'])
         self.assertIn('quotaReason', result)
         self.assertTrue(desktop.call_args.kwargs['read_only'])
-        version.assert_called_once_with(unittest.mock.ANY, allow_unverified=True)
+        version.assert_called_once_with(unittest.mock.ANY)
 
     @patch('codex_resume.__main__.ReadOnlyServer')
     @patch('codex_resume.__main__.check_version', return_value=UNKNOWN)
-    def test_failed_probe_keeps_compatibility_context(self, version, server):
-        server.return_value.__enter__.side_effect = RuntimeError('private subprocess details')
-        with self.assertRaisesRegex(AppError, '仅允许只读诊断') as error:
+    def test_failed_probe_is_not_ignored_for_unknown_version(self, version, server):
+        server.return_value.__enter__.side_effect = AppError('protocol changed')
+        with self.assertRaisesRegex(AppError, 'protocol changed'):
             self.invoke('doctor')
-        self.assertNotIn('private subprocess details', str(error.exception))
 
     @patch('codex_resume.__main__.inspect_task')
     @patch('codex_resume.__main__.Desktop')
     @patch('codex_resume.__main__.check_version', return_value=UNKNOWN)
     def test_unknown_check_reads_snapshot_without_navigation_or_enrollment(self, version, desktop, inspect):
+        inspect.return_value = {'canMonitor': False, 'decision': 'stop', 'reason': 'missing state'}
         result = self.invoke('check', THREAD)
         self.assertFalse(result['canMonitor'])
-        self.assertFalse(result['autoResumeAllowed'])
         self.assertEqual(result['decision'], 'stop')
-        desktop.return_value.__enter__.return_value.snapshot.assert_called_once_with(THREAD)
-        self.assertTrue(desktop.call_args.kwargs['read_only'])
-        inspect.assert_not_called()
+        inspect.assert_called_once_with(unittest.mock.ANY, unittest.mock.ANY, THREAD, list_timeout=55)
+        desktop.assert_not_called()
 
-    @patch('codex_resume.__main__.Desktop')
+    @patch('codex_resume.__main__.inspect_task')
     @patch('codex_resume.__main__.check_version', return_value=UNKNOWN)
-    def test_unknown_snapshot_protocol_still_fails_closed(self, version, desktop):
-        desktop.return_value.__enter__.return_value.snapshot.side_effect = AppError('protocol changed')
+    def test_unknown_snapshot_protocol_still_fails_closed(self, version, inspect):
+        inspect.side_effect = AppError('protocol changed')
         with self.assertRaisesRegex(AppError, 'protocol changed'):
             self.invoke('check', THREAD)
 
@@ -215,10 +204,10 @@ class DiagnosticCommandTests(unittest.TestCase):
         self.assertEqual(self.invoke('list'), [])
 
     @patch('codex_resume.__main__.Store')
-    @patch('codex_resume.__main__.check_version', side_effect=AppError('unverified'))
-    def test_start_and_watcher_reject_before_creating_state(self, version, store):
+    @patch('codex_resume.__main__.check_version', side_effect=AppError('invalid installation'))
+    def test_invalid_installation_rejected_before_creating_state(self, version, store):
         for command in ('start', '_watch'):
-            with self.subTest(command=command), self.assertRaisesRegex(AppError, 'unverified'):
+            with self.subTest(command=command), self.assertRaisesRegex(AppError, 'invalid installation'):
                 self.invoke(command, THREAD)
         store.assert_not_called()
         self.assertTrue(all(not call.kwargs for call in version.call_args_list))

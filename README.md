@@ -52,7 +52,7 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - **Continue in the original task** — preserve the conversation, model, reasoning settings, permissions, and working directory.
 - **Local by design** — no hosted backend, domain, cloud database, or separate tool account.
 - **One task at a time** — the user explicitly selects the task; titles and “latest task” guesses are never enough to authorize monitoring.
-- **Fail closed** — normal completion, approval prompts, user input, unsupported App versions, and uncertain delivery stop automation.
+- **Fail closed** — normal completion, approval prompts, user input, incompatible App protocols, and uncertain delivery stop automation.
 - **Persistent safeguards** — budgets, cancellation, process locks, and deduplication survive restarts.
 - **UI and CLI** — use the local browser dashboard or the same guarded commands directly.
 - **No runtime packages** — the product uses only Python's standard library.
@@ -64,20 +64,22 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - macOS, or Windows 11
 - Python 3.9 or newer
 - The Codex desktop app installed, signed in, and kept open
-- Adapted macOS App versions: `26.820.60940 / build 7119`, `26.1002.52244 / build 13536`
-- Adapted Windows App/CLI pairs: `26.901.31953.0` / `0.153.1`, `26.1021.3705.0` / `0.164.0-alpha.11.1`
+- Previously inspected macOS builds (not an allowlist): `26.820.60940 / build 7119`, `26.1002.52244 / build 13536`
+- Previously inspected Windows App/CLI pairs (not an allowlist): `26.901.31953.0` / `0.153.1`, `26.1021.3705.0` / `0.164.0-alpha.11.1`
 - Default path: macOS `/Applications/ChatGPT.app`; Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
 
 Run the Windows version from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
 
-Unverified App/CLI versions may run `doctor`, `list`, and a read-only `check`.
-Diagnostics report the detected version and whether it is verified for automation.
-A successful connection or quota query does **not** validate the send protocol.
-For unverified builds, `check` never opens a conversation or enables monitoring;
-unknown snapshot protocols still fail closed. `start`, background watchers, and
-every actual continuation retain the strict version guard. There is no force-send
-override. The newer Windows pair is enabled after static inspection of the official
-x64 package and offline protocol regressions; **native Windows sending and natural
+App/CLI version numbers are diagnostic metadata, not an allowlist. New versions
+may attempt monitoring and continuation without a plugin update solely for their
+version number. Each continuation still requires compatible live protocol/state,
+confirmed quota, the original selected task, and cancellation, budget and deduplication
+checks. Unknown protocols or missing required safety state stop automation. The
+verified v11 snapshot protocol permits an omitted optional `ephemeral` field;
+only that omission is normalized to false, without an App version list. Explicit
+null/true and missing required state remain blocked. Compatibility with future
+protocol changes is not guaranteed. The newer Windows
+pair was checked by static inspection and offline regressions; **native Windows sending and natural
 reset validation have not been repeated for this pair**. Previous Windows end-to-end
 results apply to the older pair only. See [Windows compatibility evidence](docs/windows-compatibility.md).
 
@@ -259,7 +261,7 @@ The watcher stops or refuses enrollment when it sees, among other conditions:
 - an empty or archived conversation;
 - a request for user input or approval;
 - a non-usage-limit error;
-- an unsupported App version or incompatible protocol state;
+- an incompatible App protocol or incomplete required state;
 - a changed task fingerprint, model, permissions, working directory, or goal;
 - an existing uncertain-delivery record;
 - an exhausted cumulative resume budget.
@@ -320,10 +322,10 @@ Validated locally:
 - authenticated loopback Web API and browser UI behavior;
 - stale-response, stale-session, duplicate-click, and uncertain-mutation protection;
 - source launcher behavior outside the repository directory;
-- Windows named-pipe transport, App/CLI version guards, background locking, and selector-free read-only queries;
+- Windows named-pipe transport, App/CLI diagnostic metadata and runtime protocol checks, background locking, and selector-free read-only queries;
 - isolated CI on Windows, macOS, and Linux.
 
-Validated with a real account on the currently supported macOS Codex desktop App version:
+Validated with a real account on the previously validated macOS Codex desktop App builds listed above:
 
 - two successful end-to-end runs from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
 
@@ -334,7 +336,7 @@ Validated on a real Windows 11 machine with the Codex desktop App signed in to a
 Current automated suite:
 
 ```text
-Python tests: 135 total (134 passed locally; 1 Windows-only launcher test skipped)
+Python tests: 142 total (141 passed locally; 1 Windows-only launcher test skipped)
 Browser UI tests: 26 passed
 Runtime dependencies: 0
 ```
@@ -349,9 +351,9 @@ Remaining limitations:
 ## Troubleshooting
 
 <details>
-<summary><strong>The App version is rejected</strong></summary>
+<summary><strong>The App connection or protocol is incompatible</strong></summary>
 
-The internal App protocol is version-locked. Do not bypass the check. Open an issue with the App version, build number, and a redacted error summary; do not include tokens, full conversations, or private logs.
+App/CLI version numbers do not block use. Incompatible protocols or incomplete required state still stop automation. Open an issue with the App version, build number, and a redacted error summary; do not include tokens, full conversations, or private logs.
 </details>
 
 <details>
@@ -412,7 +414,7 @@ Bug reports and focused pull requests are welcome. Before opening an issue:
 - redact task UUIDs, conversation content, filesystem paths, credentials, and account data;
 - never use a real business task to demonstrate a write-path bug.
 
-For safety-sensitive changes, add an isolated regression test and preserve version guards, cancellation, budgets, deduplication, and the “uncertain means no retry” rule.
+For safety-sensitive changes, add an isolated regression test and preserve runtime protocol checks, cancellation, budgets, deduplication, and the “uncertain means no retry” rule.
 
 ## FAQ
 

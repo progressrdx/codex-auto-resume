@@ -1,4 +1,4 @@
-"""Version-pinned Desktop IPC. Never owns threads or responds to approvals."""
+"""Runtime-checked Desktop IPC. Never owns threads or responds to approvals."""
 import json
 import os
 from pathlib import Path
@@ -14,17 +14,6 @@ import uuid
 from .policy import decide, fingerprint
 from .runtime import WINDOWS_PIPE, codex_binary, platform_name, windows_package_version
 
-SUPPORTED_MAC_APPS = {
-    ('26.820.60940', '7119'),
-    ('26.1002.52244', '13536'),
-}
-# Exact pairs, not the Cartesian product of independent App/CLI allowlists.
-# The new pair was checked against the official x64 MSIX; see docs/windows-compatibility.md.
-SUPPORTED_WINDOWS_PAIRS = {
-    ('26.901.31953.0', '0.153.1'),
-    ('26.901.31953', '0.153.1'),
-    ('26.1021.3705.0', '0.164.0-alpha.11.1'),
-}
 MAX_FRAME = 32 * 1024 * 1024
 # Bilingual so the model handles both Chinese and English conversations correctly.
 CONTINUATION = (
@@ -35,7 +24,6 @@ CONTINUATION = (
     'do not expand scope, and do not bypass approvals. '
     'If the work is already done or requires a user decision, state that clearly and stop.'
 )
-_VERSION_ISSUE_URL = 'https://github.com/progressrdx/codex-auto-resume/issues'
 
 
 class AppError(RuntimeError):
@@ -50,20 +38,11 @@ class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
 
-def check_version(app_path, system=None, *, allow_unverified=False):
-    """Unknown builds may be inspected, never implicitly authorized to send."""
-    def assessed(info, verified):
-        if verified:
-            return info
-        detail = ', '.join(f'{key}={value}' for key, value in info.items())
-        reason = (
-            f'App/CLI 组合未经续跑验证（{detail}）；仅允许只读诊断，禁止自动续跑。\n'
-            f'如需适配此版本，请在 {_VERSION_ISSUE_URL} 提交 Issue，附上 App 版本和 build 号。'
-        )
-        if not allow_unverified:
-            raise AppError(reason)
-        return dict(info, diagnosticOnly=True, compatibilityReason=reason)
+def check_version(app_path, system=None):
+    """Identify the installation and read diagnostic metadata, without an allowlist.
 
+    A version number does not authorize sending; live protocol and policy checks do.
+    """
     system = system or platform_name()
     if system == 'windows':
         binary = codex_binary(app_path, system)
@@ -78,8 +57,7 @@ def check_version(app_path, system=None, *, allow_unverified=False):
             raise AppError(str(exc) or '无法核验 Windows Codex App 版本') from exc
         if result.returncode or not cli_version:
             raise AppError('无法读取 Windows App 内置 CLI 版本；请检查安装是否完整')
-        return assessed({'platform': 'windows', 'version': app_version, 'cliVersion': cli_version},
-                        (app_version, cli_version) in SUPPORTED_WINDOWS_PAIRS)
+        return {'platform': 'windows', 'version': app_version, 'cliVersion': cli_version}
     path = Path(app_path)
     try:
         info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
@@ -88,14 +66,13 @@ def check_version(app_path, system=None, *, allow_unverified=False):
     version = (info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
     if info.get('CFBundleIdentifier') != 'com.openai.codex' or not all(isinstance(v, str) and v for v in version):
         raise AppError('找不到可识别的 Codex App 身份或完整版本信息')
-    return assessed({'platform': 'macos', 'version': version[0], 'build': version[1]},
-                    version in SUPPORTED_MAC_APPS)
+    return {'platform': 'macos', 'version': version[0], 'build': version[1]}
 
 
 def open_selected_thread(app_path, thread_id, system=None):
     """Navigate to an existing selected conversation. Never prefill/send a prompt.
 
-    The pinned App's localConversation deep-link handler checks thread existence
+    The App's localConversation deep-link handler checks thread existence
     then navigates to its original route. This does not make this client an owner.
     Success here only means navigation was requested; a fresh snapshot is required.
     """
@@ -196,8 +173,7 @@ class Desktop:
         self.state_generation = 0
 
     def __enter__(self):
-        self.app_info = (check_version(self.app_path, self.system, allow_unverified=True)
-                         if self.read_only else check_version(self.app_path, self.system))
+        self.app_info = check_version(self.app_path, self.system)
         if self.system == 'windows':
             self.sock = (self.transport_factory or WindowsPipe)(WINDOWS_PIPE, self.timeout)
             try:
@@ -282,7 +258,15 @@ class Desktop:
                 self.state_generation += 1
                 change = params.get('change', {})
                 if change.get('type') == 'snapshot':
-                    self.snapshot_value = change.get('conversationState')
+                    state = change.get('conversationState')
+                    # Verified v11 semantics: ephemeral is optional; JSON omits
+                    # undefined and the App treats only === true as ephemeral.
+                    # Apply only to this validated owner/local snapshot protocol,
+                    # independent of App release. Explicit null/true stay unsafe;
+                    # all other required state is still checked by the policy.
+                    if isinstance(state, dict) and 'ephemeral' not in state:
+                        state = dict(state, ephemeral=False)
+                    self.snapshot_value = state
                     self.revision = change.get('revision')
                 elif change.get('type') == 'patches':
                     # Do not infer current state from a partial/missed patch stream.
@@ -334,16 +318,6 @@ class Desktop:
         state = self.snapshot_value
         if not isinstance(state, dict) or state.get('id') != self.thread_id:
             raise AppError('App 返回了不匹配的任务状态')
-        # These inspected builds copy optional thread.ephemeral into snapshots.
-        # JSON omits undefined; its isEphemeralConversation uses === true.
-        # Normalize only these inspected profiles; the policy stays fail-closed
-        # for missing fields from other versions and for explicit null/true.
-        if (self.app_info in (
-                {'platform': 'macos', 'version': '26.1002.52244', 'build': '13536'},
-                {'platform': 'windows', 'version': '26.1021.3705.0',
-                 'cliVersion': '0.164.0-alpha.11.1'})
-                and 'ephemeral' not in state):
-            state = dict(state, ephemeral=False)
         return state
 
     def _drain_pending(self):
@@ -365,8 +339,9 @@ class Desktop:
         if self.read_only:
             raise AppError('只读诊断连接禁止自动续跑')
         current_app = check_version(self.app_path, self.system)
-        # Even two supported builds must not share an already-open connection:
-        # the state normalization belongs to the build used at initialization.
+        # App/CLI updates must not reuse an already-open connection:
+        # Reconnect and revalidate live state after an update, even when protocol
+        # versions appear unchanged.
         if self.app_info is not None and current_app != self.app_info:
             raise AppError('App/CLI 在连接期间已更新；取消本次续跑，请重新连接')
         state = self.snapshot(thread_id)

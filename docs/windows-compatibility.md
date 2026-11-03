@@ -24,12 +24,15 @@
   `request.threadId` 必须匹配任务；省略 `context` 时继承原任务设置。
 - 状态仍提供 canonical turnHistory、requests、hostId 和 resumeState。
 - 可选 `thread.ephemeral` 为 undefined 时会被 JSON 省略，App 自身以 `=== true`
-  判断临时会话。因此仅对本次精确组合将缺失值视为 false；显式 null/true 仍拒绝。
+  判断临时会话。当前实现按已核验的 v11 快照语义将该可选字段的缺失值视为 false，
+  不再绑定本次精确 App/CLI 组合；显式 null/true 仍拒绝。
 - App 对尚未确认的 `unconfirmedTurnSubmissions` 阻止继续发送；本工具同样阻止，
   包括非空且标记 terminal 的记录，避免不确定发送被再次尝试。
 
-这是精确 App/CLI 组合适配，不是取消版本检查。旧 App 搭配新 CLI、
-新 App 搭配旧 CLI、未来版本都不会得到发送权限。连接期间版本变化会取消发送。
+以上是历史组合的适配证据，不是当前版本白名单。App/CLI 版本号仅用于诊断，
+旧新组合或未来版本不会仅因版本号被拒绝；发送仍须通过实时协议和状态检查。
+未知协议、必要状态缺失及连接期间版本变化会取消发送。未来协议变化的兼容性未因此得到验证。
+最新包的检查与本次字段修复见[最新正式版兼容记录](latest-compatibility-check.md)。
 
 ## 验证层级
 

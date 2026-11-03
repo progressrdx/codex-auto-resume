@@ -729,7 +729,7 @@ class TransportTests(unittest.TestCase):
 
     @patch('codex_resume.app.windows_package_version', return_value='26.901.31953.0')
     @patch('codex_resume.app.subprocess.run')
-    def test_windows_version_requires_exact_package_and_cli(self, run, package):
+    def test_windows_reads_package_and_cli_metadata(self, run, package):
         run.return_value = SimpleNamespace(returncode=0, stdout='codex-cli 0.153.1\n')
         with tempfile.TemporaryDirectory() as directory:
             binary=Path(directory)/'codex.exe'; binary.touch()
@@ -739,18 +739,19 @@ class TransportTests(unittest.TestCase):
 
     @patch('codex_resume.app.windows_package_version', return_value='99.0.0.0')
     @patch('codex_resume.app.subprocess.run')
-    def test_windows_future_version_fails_closed(self, run, package):
+    def test_windows_future_version_is_not_blocked(self, run, package):
         run.return_value = SimpleNamespace(returncode=0, stdout='codex-cli 0.153.1\n')
         with tempfile.TemporaryDirectory() as directory:
             binary=Path(directory)/'codex.exe'; binary.touch()
-            with self.assertRaises(AppError): check_version(binary, 'windows')
+            self.assertEqual(check_version(binary, 'windows')['version'], '99.0.0.0')
 
-    def test_optional_ephemeral_normalization_is_limited_to_verified_build(self):
+    def test_optional_ephemeral_normalization_uses_v11_not_app_version(self):
         versions = [None,
             {'platform':'macos', 'version':'26.820.60940', 'build':'7119'},
             {'platform':'macos', 'version':'26.1002.52244', 'build':'13536'}]
-        for info in versions:
-            for value in ('missing', False, True, None):
+        for info in versions + [{'platform':'macos', 'version':'99.0', 'build':'99999'},
+                                {'platform':'windows', 'version':'99.0.0.0', 'cliVersion':'99.0'}]:
+            for value in ('missing', False, True, None, 0, 'false'):
                 with self.subTest(info=info, ephemeral=value):
                     raw = state()
                     if value == 'missing':
@@ -758,12 +759,14 @@ class TransportTests(unittest.TestCase):
                     else:
                         raw['ephemeral'] = value
                     app = Desktop('/unused'); app.app_info = info
-                    def receive(_deadline):
-                        app.snapshot_value = raw
+                    app.sock = FakeSocket([{'type':'broadcast', 'method':'thread-stream-state-changed',
+                        'version':11, 'sourceClientId':'owner',
+                        'params':{'conversationId':THREAD, 'hostId':'local',
+                            'change':{'type':'snapshot', 'revision':1, 'conversationState':raw}}}])
                     with patch.object(app, 'request', return_value={'handledByClientId':'owner'}), \
-                            patch.object(app, 'follow'), patch.object(app, '_read', side_effect=receive):
+                            patch.object(app, 'follow'):
                         snapshot = app.snapshot(THREAD)
-                    expected = value is False or (value == 'missing' and info == versions[-1])
+                    expected = value is False or value == 'missing'
                     self.assertEqual(decide(snapshot).action == 'resume', expected)
                     self.assertEqual('ephemeral' in raw, value != 'missing')
 
@@ -945,13 +948,13 @@ class MacCompatibilityTests(unittest.TestCase):
             'CFBundleIdentifier':bundle, 'CFBundleShortVersionString':version, 'CFBundleVersion':build}))
         return app
 
-    def test_macos_rejects_changed_build_and_wrong_bundle(self):
+    def test_macos_accepts_changed_build_but_rejects_wrong_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
-            for build, bundle in [('13537', 'com.openai.codex'), ('13536', 'com.openai.chat')]:
-                with self.subTest(build=build, bundle=bundle):
-                    app = self.write_app_info(Path(directory), build=build, bundle=bundle)
-                    with self.assertRaises(AppError):
-                        check_version(app, 'macos')
+            app = self.write_app_info(Path(directory), build='13537')
+            self.assertEqual(check_version(app, 'macos')['build'], '13537')
+            app = self.write_app_info(Path(directory), bundle='com.openai.chat')
+            with self.assertRaises(AppError):
+                check_version(app, 'macos')
 
     def test_macos_unix_socket_full_resume_exchange_with_simulated_app(self):
         """Real Unix socket, simulated App only; never contacts a user task."""
@@ -959,7 +962,7 @@ class MacCompatibilityTests(unittest.TestCase):
         import threading
         with tempfile.TemporaryDirectory(dir='/tmp') as directory:
             root = Path(directory)
-            app_path = self.write_app_info(root)
+            app_path = self.write_app_info(root, version='99.0', build='99999')
             ipc = root / 'ipc'; ipc.mkdir(mode=0o700)
             endpoint = ipc / 'ipc.sock'
             messages, errors = [], []
@@ -1109,16 +1112,17 @@ for line in sys.stdin:
                 self.assertEqual(server.query('account/rateLimits/read'), {'rateLimits': {'windows': True}})
                 self.assertIsNone(server.selector)
 
-    def test_version_mismatch_is_closed(self):
+    def test_unknown_macos_version_is_not_blocked(self):
         import plistlib
         from codex_resume.app import check_version
         with tempfile.TemporaryDirectory() as directory:
             contents=Path(directory)/'Contents'; contents.mkdir()
             (contents/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.openai.codex',
                 'CFBundleVersion':'future', 'CFBundleShortVersionString':'next'}))
-            with self.assertRaises(AppError): check_version(directory, 'macos')
+            self.assertEqual(check_version(directory, 'macos'),
+                             {'platform':'macos', 'version':'next', 'build':'future'})
 
-    def test_current_macos_version_is_explicitly_supported(self):
+    def test_current_macos_version_metadata(self):
         import plistlib
         from codex_resume.app import check_version
         with tempfile.TemporaryDirectory() as directory:
