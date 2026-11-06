@@ -66,7 +66,7 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - The Codex desktop app installed, signed in, and kept open
 - Previously inspected macOS builds (not an allowlist): `26.820.60940 / build 7119`, `26.1002.52244 / build 13536`
 - Previously inspected Windows App/CLI pairs (not an allowlist): `26.901.31953.0` / `0.153.1`, `26.1021.3705.0` / `0.164.0-alpha.11.1`
-- Default path: macOS `/Applications/ChatGPT.app`; Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
+- Default path: macOS `/Applications/ChatGPT.app`; the Windows engine is auto-detected under `%LOCALAPPDATA%\OpenAI\Codex\bin\`, including the newer `<hash>` subdirectory layout
 
 Run the Windows version from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
 
