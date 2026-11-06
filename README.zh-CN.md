@@ -65,7 +65,7 @@
 - 已安装、登录并保持打开的 Codex 桌面 App
 - macOS 历史核验参考（非版本限制）：`26.820.60940 / build 7119`、`26.1002.52244 / build 13536`
 - Windows 历史核验参考（非版本限制）：`26.901.31953.0` / `0.153.1`、`26.1021.3705.0` / `0.164.0-alpha.11.1`
-- 默认路径：macOS `/Applications/ChatGPT.app`；Windows `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
+- 默认路径：macOS `/Applications/ChatGPT.app`；Windows 自动识别 `%LOCALAPPDATA%\OpenAI\Codex\bin\` 下的引擎，包括新版 Hash 子目录布局
 
 Windows 版请在 Windows 原生 PowerShell 或命令提示符中运行，不要放到 WSL 里运行。本工具需要连接 Windows Codex App 的本机命名管道。Codex 官方 Windows App 本身支持原生 Windows 和可选 WSL 工作区，但这是两个不同的运行环境。
 

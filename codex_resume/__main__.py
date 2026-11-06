@@ -11,7 +11,7 @@ from .app import AppError, Desktop, check_version, open_selected_thread
 from .controller import Controller
 from .policy import quota_status
 from .rpc import ReadOnlyServer
-from .runtime import codex_binary, default_app_path, platform_name, process_exists
+from .runtime import codex_binary, default_app_path, discover_app_path, platform_name, process_exists
 from .store import Store
 from .tasks import inspect_task, list_conversations, stored_assessment
 
@@ -33,8 +33,8 @@ def positive(value):
 def parser():
     p = argparse.ArgumentParser(description='Codex App 本地额度恢复续跑工具')
     p.add_argument('--home', type=Path, default=Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')))
-    p.add_argument('--app', type=Path, default=default_app_path(),
-                   help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径')
+    p.add_argument('--app', type=Path, default=None,
+                   help='macOS App 包路径，或 Windows Codex App 的 codex.exe 路径；默认自动发现')
     p.add_argument('--state-dir', type=Path, default=Path.home() / '.codex-auto-resume')
     p.add_argument('--list-timeout', type=int, default=55,
                    help='读取对话列表的最长秒数（默认 55；账号对话超多时可适当调大）')
@@ -209,6 +209,10 @@ def serve_watch(args, store):
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.app is None:
+        # status/stop never touch the engine; discovery ambiguity must not block them.
+        args.app = (default_app_path() if args.command in ('status', 'stop')
+                    else discover_app_path())
     args.home, args.app, args.state_dir = [p.expanduser().absolute() for p in (args.home, args.app, args.state_dir)]
     if args.command == 'web':
         from .web import serve
