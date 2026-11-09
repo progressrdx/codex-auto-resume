@@ -148,6 +148,32 @@ class BackendTests(unittest.TestCase):
         with patch('codex_resume.web.subprocess.run',side_effect=subprocess.TimeoutExpired('test',65)) as run:
             with self.assertRaises(APIError): self.backend.command('start',THREAD)
             self.assertEqual(run.call_count,1)
+    def test_read_and_write_commands_keep_separate_timeouts_and_messages(self):
+        import subprocess
+        done=SimpleNamespace(returncode=0,stdout='[]',stderr='')
+        with patch('codex_resume.web.subprocess.run',return_value=done) as run:
+            self.backend.command('list'); self.backend.command('start',THREAD)
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list],
+                         [Backend.READ_TIMEOUT,Backend.MUTATE_TIMEOUT])
+        with patch('codex_resume.web.subprocess.run',
+                   side_effect=subprocess.TimeoutExpired('test',Backend.READ_TIMEOUT)):
+            with self.assertRaises(APIError) as raised: self.backend.command('check',THREAD)
+        self.assertEqual(raised.exception.status,504)
+        self.assertIn('读取超时',str(raised.exception))
+    def test_web_options_forward_list_timeout_before_the_subcommand(self):
+        done=SimpleNamespace(returncode=0,stdout='[]',stderr='')
+        backend=Backend(SimpleNamespace(home=Path('/tmp/home'),app=Path('/tmp/app'),
+                                       state_dir=Path('/tmp/state'),list_timeout=90))
+        with patch('codex_resume.web.subprocess.run',return_value=done) as run:
+            backend.command('list')
+        cmd=run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index('--list-timeout')+1],'90')
+        self.assertLess(cmd.index('--list-timeout'),cmd.index('list'))
+    def test_web_without_list_timeout_keeps_the_cli_default(self):
+        done=SimpleNamespace(returncode=0,stdout='[]',stderr='')
+        with patch('codex_resume.web.subprocess.run',return_value=done) as run:
+            self.backend.command('list')
+        self.assertNotIn('--list-timeout',run.call_args.args[0])
     def test_serve_always_binds_loopback(self):
         args=SimpleNamespace(port=0,home=Path('/tmp/home'),app=Path('/tmp/app'),state_dir=Path('/tmp/state'))
         with patch('codex_resume.web.CompanionServer') as companion:

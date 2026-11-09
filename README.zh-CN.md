@@ -195,7 +195,7 @@ Windows：
 # 发现本地对话，但不会自动托管。
 ./resume list
 
-# 只读检查一个准确 UUID。
+# 只读检查一个准确 UUID，不会打开该对话。
 ./resume check <任务UUID>
 
 # 以默认累计上限 3 次启动监控。
@@ -283,6 +283,7 @@ flowchart LR
 | App 位于其他目录 | `./resume --app "/Applications/你的 App.app" web` |
 | 使用其他 Codex 目录 | `./resume --home /path/to/.codex web` |
 | 使用其他状态目录 | `./resume --state-dir /private/path web` |
+| 账号对话很多时加长列表读取 | `./resume --list-timeout 120 web` |
 | 指定 Python | `PYTHON_BIN=/path/to/python3 ./resume web` |
 
 Windows 自定义路径示例：`.\resume.cmd --app "C:\path\to\codex.exe" web`。通常不需要填写，启动器会使用当前用户的默认 App 路径。

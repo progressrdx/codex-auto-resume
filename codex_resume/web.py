@@ -35,6 +35,12 @@ def thread_id(value):
 
 class Backend:
     """Reuse the guarded CLI, never accept arbitrary paths, prompts or commands."""
+    # Reads may paginate a whole account; mutations hand off to a bounded CLI
+    # operation. They must not share one timeout or one error message.
+    READ_ACTIONS = frozenset({'status', 'list', 'check', 'doctor'})
+    READ_TIMEOUT = 120
+    MUTATE_TIMEOUT = 65
+
     def __init__(self, args):
         self.args = args
         self.quota_lock = threading.Lock()
@@ -44,13 +50,22 @@ class Backend:
 
     def command(self, *parts):
         cmd = [sys.executable, '-m', 'codex_resume', '--home', str(self.args.home),
-               '--app', str(self.args.app), '--state-dir', str(self.args.state_dir), *parts]
+               '--app', str(self.args.app), '--state-dir', str(self.args.state_dir)]
+        # Forward the read timeout the operator chose for the Web session;
+        # without this a large account keeps hitting the default.
+        list_timeout = getattr(self.args, 'list_timeout', None)
+        if isinstance(list_timeout, int) and not isinstance(list_timeout, bool):
+            cmd += ['--list-timeout', str(list_timeout)]
+        cmd += list(parts)
+        read_only = parts[0] in self.READ_ACTIONS
         try:
             result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent,
-                                    capture_output=True, text=True, timeout=65)
+                                    capture_output=True, text=True,
+                                    timeout=self.READ_TIMEOUT if read_only else self.MUTATE_TIMEOUT)
         except subprocess.TimeoutExpired:
-            # start may already have spawned a watcher. Never retry a mutation here.
-            raise APIError('操作超时，结果未确认。请刷新监控记录；不要重复点击开启。', 504)
+            # A timed-out start may already have spawned a watcher. Never retry here.
+            raise APIError('本机读取超时，结果未确认。请稍后刷新；本次没有开启或停止任何监控。' if read_only else
+                           '操作超时，结果未确认。请刷新监控记录；不要重复点击开启。', 504)
         if result.returncode:
             message = result.stderr.strip()
             if not message or len(message) > 300 or 'Traceback' in message:

@@ -23,6 +23,9 @@ let refreshGeneration = 0;
 const MUTATION_KEY = 'relay-unconfirmed-web-action-v1';
 const MUTATION_LOCK = 'relay-web-mutation-v1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Server reads may paginate a whole account (120s); the client waits a little
+// longer so the server's own timeout answer arrives instead of an abort.
+const READ_ABORT_MS = 125000, MUTATE_ABORT_MS = 70000;
 const assessments = new Map();
 const taskStates = {running:'任务执行中', quota_limited:'因额度暂停', needs_attention:'需要你处理',
   idle:'本轮已结束', empty:'空对话', interrupted:'已手动停止', other_failure:'其他错误',
@@ -127,7 +130,7 @@ function forget() {
 async function api(path, data) {
   const generation = authGeneration;
   const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),70000);
+  const timeout=setTimeout(()=>controller.abort(), data===undefined ? READ_ABORT_MS : MUTATE_ABORT_MS);
   try {
   const response = await fetch(`/api/${path}`, {
     signal:controller.signal,

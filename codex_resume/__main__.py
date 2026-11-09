@@ -217,8 +217,10 @@ def main(argv=None):
     if args.command in ('doctor', 'check', 'list', 'start', '_watch'):
         version = check_version(args.app)
     if args.command == 'check':
-        result = inspect_task(args.home, args.app, args.thread, list_timeout=args.list_timeout)
-        output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
+        # leave the App untouched: no navigation, no enrollment, no send.
+        result = inspect_task(args.home, args.app, args.thread, list_timeout=args.list_timeout,
+                              allow_open=False)
+        output(dict(result, note='只读检查；不会打开任务、开启托管或发送消息；实时状态不可用时只报告历史记录'))
         return
     if args.command in ('doctor', 'list'):
         with ReadOnlyServer(codex_binary(args.app), args.home) as server:

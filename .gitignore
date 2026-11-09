@@ -5,6 +5,9 @@ __pycache__/
 .build/
 dist/
 
+# Local IDE settings stay local.
+.idea/
+
 # Local development notes and real-account validation evidence never ship.
 .light-dev/
 node_modules/

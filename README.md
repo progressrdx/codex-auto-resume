@@ -204,7 +204,7 @@ The examples below use macOS's `./resume`. On Windows, replace that prefix with 
 # Discover local conversations; this does not enroll them.
 ./resume list
 
-# Read-only eligibility check for one exact UUID.
+# Read-only eligibility check for one exact UUID; never opens the conversation.
 ./resume check <TASK_UUID>
 
 # Start one watcher with the default cumulative budget of 3.
@@ -292,6 +292,7 @@ Global options go before the subcommand; Web options go after `web`.
 | Different App location | `./resume --app "/Applications/Your App.app" web` |
 | Different Codex home | `./resume --home /path/to/.codex web` |
 | Different state directory | `./resume --state-dir /private/path web` |
+| Longer conversation-list read | `./resume --list-timeout 120 web` |
 | Specific Python executable | `PYTHON_BIN=/path/to/python3 ./resume web` |
 
 Windows custom path example: `.\resume.cmd --app "C:\path\to\codex.exe" web`. This is normally unnecessary because the current user's default App path is detected automatically.

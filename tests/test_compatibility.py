@@ -187,7 +187,8 @@ class DiagnosticCommandTests(unittest.TestCase):
         result = self.invoke('check', THREAD)
         self.assertFalse(result['canMonitor'])
         self.assertEqual(result['decision'], 'stop')
-        inspect.assert_called_once_with(unittest.mock.ANY, unittest.mock.ANY, THREAD, list_timeout=55)
+        inspect.assert_called_once_with(unittest.mock.ANY, unittest.mock.ANY, THREAD,
+                                        list_timeout=55, allow_open=False)
         desktop.assert_not_called()
 
     @patch('codex_resume.__main__.inspect_task')

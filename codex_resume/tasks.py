@@ -104,7 +104,14 @@ def live_assessment(home, app_path, thread_id, timeout=None):
                 for r in state.get('requests', [])) if isinstance(state.get('requests'), list) else 0}
 
 
-def inspect_task(home, app_path, thread_id, list_timeout=55):
+def inspect_task(home, app_path, thread_id, list_timeout=55, allow_open=True):
+    """Assess one exact conversation. Never authorizes a send.
+
+    allow_open: only the enrollment path and the watcher's reconnect path may
+    navigate to the original UUID to restore a live connection. A user-facing
+    ``check`` is documented as leaving the App untouched, so it passes False and
+    reports persisted history instead of opening the conversation.
+    """
     thread_id = str(uuid.UUID(thread_id))
     # Archiving is a user stop signal, even if the last persisted turn was still
     # in progress. Never navigate to or enroll an archived conversation.
@@ -126,30 +133,31 @@ def inspect_task(home, app_path, thread_id, list_timeout=55):
     # Opening the exact UUID is navigation only; fresh live state is still
     # required before enrollment. App loading is asynchronous, so poll briefly
     # rather than making one timing-sensitive snapshot attempt.
-    try:
-        open_selected_thread(app_path, thread_id)
-    except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
-        pass
-    else:
-        transient = (ConnectionUnavailable, ConnectionError, FileNotFoundError,
-                     TimeoutError, socket.timeout)
-        deadline = time.monotonic() + LIVE_REOPEN_TIMEOUT
-        for attempt in range(LIVE_REOPEN_ATTEMPTS):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.05:
-                break
-            # Snapshot uses one App request and one stream wait; halve the
-            # remaining budget so a slow attempt cannot overrun the whole poll.
-            timeout = min(LIVE_REOPEN_ATTEMPT_TIMEOUT, remaining / 2)
-            try:
-                result = live_assessment(home, app_path, thread_id, timeout=timeout)
-            except transient:
-                result = None
-            if result is not None:
-                return dict(result, openedSelectedThread=True)
-            remaining = deadline - time.monotonic()
-            if attempt + 1 < LIVE_REOPEN_ATTEMPTS and remaining > 0:
-                time.sleep(min(LIVE_REOPEN_RETRY_INTERVAL, remaining))
+    if allow_open:
+        try:
+            open_selected_thread(app_path, thread_id)
+        except (ConnectionUnavailable, ConnectionError, FileNotFoundError, TimeoutError, socket.timeout):
+            pass
+        else:
+            transient = (ConnectionUnavailable, ConnectionError, FileNotFoundError,
+                         TimeoutError, socket.timeout)
+            deadline = time.monotonic() + LIVE_REOPEN_TIMEOUT
+            for attempt in range(LIVE_REOPEN_ATTEMPTS):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.05:
+                    break
+                # Snapshot uses one App request and one stream wait; halve the
+                # remaining budget so a slow attempt cannot overrun the whole poll.
+                timeout = min(LIVE_REOPEN_ATTEMPT_TIMEOUT, remaining / 2)
+                try:
+                    result = live_assessment(home, app_path, thread_id, timeout=timeout)
+                except transient:
+                    result = None
+                if result is not None:
+                    return dict(result, openedSelectedThread=True)
+                remaining = deadline - time.monotonic()
+                if attempt + 1 < LIVE_REOPEN_ATTEMPTS and remaining > 0:
+                    time.sleep(min(LIVE_REOPEN_RETRY_INTERVAL, remaining))
     with ReadOnlyServer(codex_binary(app_path), home) as server:
         response = server.query('thread/read', {'threadId': thread_id, 'includeTurns': True})
     return stored_assessment(response.get('thread'), thread_id)

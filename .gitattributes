@@ -1,0 +1,6 @@
+# One line ending per file type. The repository stores text as LF, so a
+# Windows checkout cannot turn the POSIX launcher into a CRLF script.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.png binary

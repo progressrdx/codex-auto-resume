@@ -307,6 +307,20 @@ class TaskDiscoveryTests(unittest.TestCase):
     @patch('codex_resume.tasks.open_selected_thread')
     @patch('codex_resume.tasks.ReadOnlyServer')
     @patch('codex_resume.tasks.Desktop')
+    def test_check_without_open_never_navigates_and_reports_history(self, desktop, server, open_thread):
+        desktop.return_value.__enter__.return_value.snapshot.side_effect = ThreadUnavailable()
+        reader = server.return_value.__enter__.return_value
+        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored('inProgress')}]
+        result = inspect_task(Path('/home'), Path('/app'), THREAD, allow_open=False)
+        open_thread.assert_not_called()
+        self.assertEqual(result['source'], 'history')
+        self.assertEqual(result['connection'], 'waiting')
+        self.assertTrue(result['canMonitor'])
+        self.assertEqual(desktop.return_value.__enter__.return_value.snapshot.call_count, 1)
+
+    @patch('codex_resume.tasks.open_selected_thread')
+    @patch('codex_resume.tasks.ReadOnlyServer')
+    @patch('codex_resume.tasks.Desktop')
     def test_socket_timeout_selection_falls_back_to_read_only_history(self, desktop, server, _open_thread):
         import socket
         desktop.return_value.__enter__.return_value.snapshot.side_effect = socket.timeout

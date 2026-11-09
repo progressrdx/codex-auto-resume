@@ -1,5 +1,12 @@
 # 版本记录
 
+## 未发布
+
+- **`check` 不再打开所选对话**：`inspect_task` 新增 `allow_open`；`check` 传入 False，实时状态不可用时直接退回已有历史记录（仅用于筛选，不授权发送）。导航能力只保留在 `start` 与 watcher 重连路径，CLI 提示与实际行为一致。
+- **Web 只读接口不再报成写操作超时**：读取（status/list/check/doctor）与写操作（start/stop）使用不同超时（120 秒 / 65 秒）和不同提示；`--list-timeout` 现在会从 `web` 透传给子进程。
+- **前端请求超时按类型区分**：读取 125 秒、写 70 秒，避免客户端先于服务端放弃并吞掉服务端的说明。
+- 新增 `.gitattributes` 固定行尾（`resume` 保持 LF，`.cmd`/`.ps1` 使用 CRLF），`.idea/` 加入忽略列表。
+
 ## 0.3.4 — 新版兼容修复与健壮性优化（2026-11-03）
 
 - **RPC 握手版本号修正**：`clientInfo.version` 改为读取包实际版本（`__version__`），不再固定声明 `0.1.0`。
