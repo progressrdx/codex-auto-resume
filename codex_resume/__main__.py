@@ -209,11 +209,16 @@ def serve_watch(args, store):
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    if args.app is None:
-        # status/stop never touch the engine; discovery ambiguity must not block them.
+    # status/stop never touch the engine; discovery ambiguity must not block
+    # them. web defers discovery to the calls that need the engine, so its
+    # watch list and stop action stay available when discovery is ambiguous.
+    if args.app is None and args.command != 'web':
         args.app = (default_app_path() if args.command in ('status', 'stop')
                     else discover_app_path())
-    args.home, args.app, args.state_dir = [p.expanduser().absolute() for p in (args.home, args.app, args.state_dir)]
+    args.home = args.home.expanduser().absolute()
+    args.state_dir = args.state_dir.expanduser().absolute()
+    if args.app is not None:
+        args.app = args.app.expanduser().absolute()
     if args.command == 'web':
         from .web import serve
         serve(args)

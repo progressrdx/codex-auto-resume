@@ -8,6 +8,11 @@ import sys
 
 WINDOWS_PIPE = r'\\.\pipe\codex-ipc'
 CODEX_EXE = 'codex.exe'
+# The desktop App is an MSIX package, so every process it hosts runs from
+# "...\WindowsApps\OpenAI.Codex_<version>_...". A running engine is only
+# attributed to the App through that package directory.
+APP_PACKAGE_DIR = r'windowsapps\openai.codex'
+PYTHON_IMAGES = frozenset({'python.exe', 'pythonw.exe', 'py.exe', 'pyw.exe'})
 
 
 def platform_name():
@@ -47,16 +52,21 @@ def codex_binary(app_path, system=None):
 def discover_app_path(system=None):
     """Resolve the Windows engine path, preferring the copy the App is running.
 
-    An explicitly supplied --app path never reaches this function. Without
-    process evidence, only the documented install directory is searched: the
-    legacy ``bin\\codex.exe`` file and one level of hash subdirectories.
+    An explicitly supplied --app path never reaches this function. A running
+    engine only counts once its process tree can be attributed to the desktop
+    App, so the watcher's own ``app-server`` children and stale query processes
+    are never mistaken for the current engine. Without that evidence only the
+    documented install directory is searched: the legacy ``bin\\codex.exe``
+    file and one level of hash subdirectories, both after links and junctions
+    are resolved.
     """
     system = system or platform_name()
     default = default_app_path(system)
     if system != 'windows':
         return default
     root = Path(os.path.abspath(default.parent))
-    running = _trusted_binaries(_windows_process_paths(CODEX_EXE), root)
+    attributed, unattributed = _app_engine_paths()
+    running = _trusted_binaries(attributed, root)
     if len(running) > 1:
         raise RuntimeError(_ambiguous_message(
             '检测到多个正在运行的 Codex 引擎', running, '请关闭多余的 Codex App 后再试'))
@@ -65,42 +75,77 @@ def discover_app_path(system=None):
     installed = _installed_binaries(root)
     if len(installed) > 1:
         raise RuntimeError(_ambiguous_message(
-            '安装目录中找到多个 codex.exe', installed, '请启动 Codex App 让正在运行的引擎可被识别'))
-    return installed[0] if installed else default
+            '安装目录中找到多个 codex.exe', installed, _install_hint(unattributed, root)))
+    if installed:
+        return installed[0]
+    # Nothing usable inside the install root. Keep the documented default so a
+    # missing App still reports a real location, but never hand back a default
+    # that links outside the root.
+    if default.is_file() and not _inside(default, root):
+        raise RuntimeError(f'默认引擎路径指向安装目录之外：{default}\n'
+                           '请移除该链接或目录联接；或用 --app 显式指定 codex.exe 路径')
+    return default
+
+
+def _resolved(path):
+    """Absolute path with every link, junction and drive substitution resolved."""
+    return Path(os.path.realpath(os.fspath(path)))
+
+
+def _inside(path, root):
+    """True when path stays inside root once links and junctions are resolved."""
+    try:
+        _resolved(path).relative_to(_resolved(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _trusted_key(path, root):
+    """De-duplication key for a codex.exe whose real target lives inside root."""
+    if path.name.lower() != CODEX_EXE or not path.is_file() or not _inside(path, root):
+        return None
+    return os.path.normcase(str(_resolved(path)))
 
 
 def _trusted_binaries(paths, root):
-    """Existing codex.exe files under the trusted install root, deduplicated."""
+    """Existing codex.exe files under the trusted install root, deduplicated.
+
+    The resolved target decides both the root check and de-duplication: a
+    ``bin\\<hash>`` entry that links outside the install directory is dropped
+    instead of being executed later.
+    """
     candidates, seen = [], set()
     for value in paths:
-        path = Path(value)
-        if path.name.lower() != CODEX_EXE or not path.is_file():
+        path = Path(os.path.abspath(value))
+        key = _trusted_key(path, root)
+        if key is None or key in seen:
             continue
-        absolute = Path(os.path.abspath(path))
-        if not absolute.is_relative_to(root):
-            continue
-        key = os.path.normcase(str(absolute))
-        if key not in seen:
-            seen.add(key)
-            candidates.append(absolute)
+        seen.add(key)
+        candidates.append(path)
     return candidates
 
 
 def _installed_binaries(root):
     """Legacy top-level codex.exe and one level of hash subdirectories."""
-    candidates = []
+    candidates, seen = [], set()
+    for path in _install_candidates(root):
+        key = _trusted_key(path, root)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(path)
+    return candidates
+
+
+def _install_candidates(root):
+    """The bounded candidate list: the legacy file plus one directory level."""
     legacy = root / CODEX_EXE
-    if legacy.is_file():
-        candidates.append(legacy)
     try:
         children = sorted(root.iterdir(), key=lambda item: os.path.normcase(item.name))
     except OSError:
-        return candidates
-    for child in children:
-        binary = child / CODEX_EXE
-        if child.is_dir() and binary.is_file():
-            candidates.append(binary)
-    return candidates
+        return [legacy]
+    return [legacy, *[child / CODEX_EXE for child in children]]
 
 
 def _ambiguous_message(summary, candidates, hint):
@@ -108,12 +153,105 @@ def _ambiguous_message(summary, candidates, hint):
     return f'{summary}，无法可靠选择：\n{listing}\n{hint}；或用 --app 显式指定 codex.exe 路径'
 
 
-def _windows_process_paths(image_name):
-    """Executable paths of running processes with the given image name.
+def _install_hint(unattributed, root):
+    """Explain how to disambiguate, naming unattributed engines when present."""
+    if _trusted_binaries(unattributed, root):
+        return '发现运行中的 codex.exe，但无法确认它属于 App；请从 App 打开目标任务后重试'
+    return '请启动 Codex App 让正在运行的引擎可被识别'
 
-    Best-effort: an unreadable process list yields no paths, which lets the
+
+def _app_engine_paths():
+    """Running codex.exe images split by whether the App owns them.
+
+    The App launches its engine from its own package directory, so a process
+    counts as the App's only when its parent chain reaches a process inside
+    that package. The watcher's own ``app-server`` children are started by
+    Python, and a query process that outlived its parent keeps no chain at all;
+    both are returned separately so they can never be used as evidence of the
+    current engine, yet can still be named when disambiguation is needed.
+    """
+    table = _windows_process_table()
+    if not table:
+        return [], []
+    parents = {pid: (parent, name) for pid, parent, name in table}
+    attributed, unattributed = [], []
+    for pid, _parent, name in table:
+        if name.lower() != CODEX_EXE:
+            continue
+        path = _windows_image_path(pid)
+        if path:
+            (attributed if _app_hosted(pid, parents) else unattributed).append(path)
+    return attributed, unattributed
+
+
+def _app_hosted(pid, parents):
+    """True when the parent chain of pid reaches an App package process."""
+    seen = set()
+    parent = parents.get(pid, (None, ''))[0]
+    while parent and parent not in seen:
+        seen.add(parent)
+        entry = parents.get(parent)
+        if entry is None:
+            return False        # ancestor already gone: ownership is unknown
+        if (entry[1] or '').lower() in PYTHON_IMAGES:
+            return False        # our own watcher or CLI started it
+        image = _windows_image_path(parent)
+        if image and APP_PACKAGE_DIR in str(image).replace('/', '\\').lower():
+            return True
+        parent = entry[0]
+    return False
+
+
+def _windows_process_table():
+    """(pid, parent pid, image name) for every process; empty when unreadable.
+
+    Best-effort: an unreadable process list yields no entries, which lets the
     caller fall back to searching the install directory.
     """
+    import ctypes
+    kernel32, entry_type = _process_api()
+    if kernel32 is None:
+        return []
+    TH32CS_SNAPPROCESS = 0x00000002
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot in (None, ctypes.c_void_p(-1).value):
+        return []
+    entries = []
+    try:
+        entry = entry_type()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            entries.append((entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile))
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return entries
+
+
+def _windows_image_path(pid):
+    """Full executable path of one process, or None when it cannot be read."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32, _entry_type = _process_api()
+    if kernel32 is None:
+        return None
+    process_query_limited_information = 0x1000
+    handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if not handle:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_api():
+    """Configured kernel32 and PROCESSENTRY32W, or (None, None) off Windows."""
     import ctypes
     from ctypes import wintypes
 
@@ -147,32 +285,8 @@ def _windows_process_paths(image_name):
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         kernel32.CloseHandle.restype = wintypes.BOOL
     except (AttributeError, OSError):
-        return []
-
-    TH32CS_SNAPPROCESS = 0x00000002
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot in (None, ctypes.c_void_p(-1).value):
-        return []
-    paths = []
-    try:
-        entry = PROCESSENTRY32W()
-        entry.dwSize = ctypes.sizeof(entry)
-        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        while found:
-            if entry.szExeFile.lower() == image_name.lower():
-                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False,
-                                              entry.th32ProcessID)
-                if handle:
-                    buffer = ctypes.create_unicode_buffer(32768)
-                    size = wintypes.DWORD(len(buffer))
-                    if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-                        paths.append(buffer.value)
-                    kernel32.CloseHandle(handle)
-            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-    finally:
-        kernel32.CloseHandle(snapshot)
-    return paths
+        return None, None
+    return kernel32, PROCESSENTRY32W
 
 
 def windows_package_version():
