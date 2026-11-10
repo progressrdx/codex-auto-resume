@@ -8,10 +8,8 @@ import sys
 
 WINDOWS_PIPE = r'\\.\pipe\codex-ipc'
 CODEX_EXE = 'codex.exe'
-# The desktop App is an MSIX package, so every process it hosts runs from
-# "...\WindowsApps\OpenAI.Codex_<version>_...". A running engine is only
-# attributed to the App through that package directory.
-APP_PACKAGE_DIR = r'windowsapps\openai.codex'
+WINDOWS_ENGINE_DIR = Path('OpenAI', 'Codex', 'bin')
+CODEX_PACKAGE_FAMILY = 'openai.codex_2p2nqsd0c76g0'
 PYTHON_IMAGES = frozenset({'python.exe', 'pythonw.exe', 'py.exe', 'pyw.exe'})
 
 
@@ -19,13 +17,16 @@ def platform_name():
     return 'windows' if sys.platform == 'win32' else 'macos' if sys.platform == 'darwin' else sys.platform
 
 
+def _windows_local_app_data():
+    return Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+
+
 def default_app_path(system=None):
     system = system or platform_name()
     if system == 'windows':
-        local = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
         # The Store/MSIX app relocates its bundled CLI here so it remains
         # executable outside the protected WindowsApps directory.
-        return local / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe'
+        return _windows_local_app_data() / WINDOWS_ENGINE_DIR / CODEX_EXE
     return Path('/Applications/ChatGPT.app')
 
 
@@ -61,10 +62,13 @@ def discover_app_path(system=None):
     are resolved.
     """
     system = system or platform_name()
-    default = default_app_path(system)
     if system != 'windows':
-        return default
-    root = Path(os.path.abspath(default.parent))
+        return default_app_path(system)
+    root = _resolved(_windows_local_app_data()) / WINDOWS_ENGINE_DIR
+    default = root / CODEX_EXE
+    if _resolved(root) != root:
+        raise RuntimeError(f'引擎安装目录被链接重定向：{root}\n'
+                           '请移除该链接或目录联接；或用 --app 显式指定 codex.exe 路径')
     attributed, unattributed = _app_engine_paths()
     running = _trusted_binaries(attributed, root)
     if len(running) > 1:
@@ -72,18 +76,19 @@ def discover_app_path(system=None):
             '检测到多个正在运行的 Codex 引擎', running, '请关闭多余的 Codex App 后再试'))
     if running:
         return running[0]
-    installed = _installed_binaries(root)
+    installed = _trusted_binaries(_install_candidates(root), root)
     if len(installed) > 1:
         raise RuntimeError(_ambiguous_message(
             '安装目录中找到多个 codex.exe', installed, _install_hint(unattributed, root)))
     if installed:
         return installed[0]
     # Nothing usable inside the install root. Keep the documented default so a
-    # missing App still reports a real location, but never hand back a default
-    # that links outside the root.
-    if default.is_file() and not _inside(default, root):
+    # missing App still reports a real location, even if nothing is installed.
+    if not _resolved(default).is_relative_to(root):
         raise RuntimeError(f'默认引擎路径指向安装目录之外：{default}\n'
                            '请移除该链接或目录联接；或用 --app 显式指定 codex.exe 路径')
+    if default.is_symlink():
+        raise RuntimeError(f'默认引擎链接未指向可用的 codex.exe：{default}')
     return default
 
 
@@ -92,49 +97,19 @@ def _resolved(path):
     return Path(os.path.realpath(os.fspath(path)))
 
 
-def _inside(path, root):
-    """True when path stays inside root once links and junctions are resolved."""
-    try:
-        _resolved(path).relative_to(_resolved(root))
-    except ValueError:
-        return False
-    return True
-
-
-def _trusted_key(path, root):
-    """De-duplication key for a codex.exe whose real target lives inside root."""
-    if path.name.lower() != CODEX_EXE or not path.is_file() or not _inside(path, root):
-        return None
-    return os.path.normcase(str(_resolved(path)))
-
-
 def _trusted_binaries(paths, root):
-    """Existing codex.exe files under the trusted install root, deduplicated.
-
-    The resolved target decides both the root check and de-duplication: a
-    ``bin\\<hash>`` entry that links outside the install directory is dropped
-    instead of being executed later.
-    """
+    """Return the checked targets themselves, without following aliases again."""
     candidates, seen = [], set()
     for value in paths:
-        path = Path(os.path.abspath(value))
-        key = _trusted_key(path, root)
-        if key is None or key in seen:
+        path = Path(value)
+        if path.name.lower() != CODEX_EXE:
             continue
-        seen.add(key)
-        candidates.append(path)
-    return candidates
-
-
-def _installed_binaries(root):
-    """Legacy top-level codex.exe and one level of hash subdirectories."""
-    candidates, seen = [], set()
-    for path in _install_candidates(root):
-        key = _trusted_key(path, root)
-        if key is None or key in seen:
+        target = _resolved(path)
+        if (target in seen or not target.is_relative_to(root)
+                or target.name.lower() != CODEX_EXE or not target.is_file()):
             continue
-        seen.add(key)
-        candidates.append(path)
+        seen.add(target)
+        candidates.append(target)
     return candidates
 
 
@@ -163,12 +138,9 @@ def _install_hint(unattributed, root):
 def _app_engine_paths():
     """Running codex.exe images split by whether the App owns them.
 
-    The App launches its engine from its own package directory, so a process
-    counts as the App's only when its parent chain reaches a process inside
-    that package. The watcher's own ``app-server`` children are started by
-    Python, and a query process that outlived its parent keeps no chain at all;
-    both are returned separately so they can never be used as evidence of the
-    current engine, yet can still be named when disambiguation is needed.
+    Look for the App's Windows package identity in the parent chain. Keep
+    watcher children and processes without a verifiable chain separate so they
+    can be reported when discovery is ambiguous.
     """
     table = _windows_process_table()
     if not table:
@@ -195,8 +167,8 @@ def _app_hosted(pid, parents):
             return False        # ancestor already gone: ownership is unknown
         if (entry[1] or '').lower() in PYTHON_IMAGES:
             return False        # our own watcher or CLI started it
-        image = _windows_image_path(parent)
-        if image and APP_PACKAGE_DIR in str(image).replace('/', '\\').lower():
+        family = _windows_package_family(parent)
+        if family and family.lower() == CODEX_PACKAGE_FAMILY:
             return True
         parent = entry[0]
     return False
@@ -250,6 +222,28 @@ def _windows_image_path(pid):
         kernel32.CloseHandle(handle)
 
 
+def _windows_package_family(pid):
+    """Read the MSIX package identity assigned by Windows to this process."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32, _entry_type = _process_api()
+    if kernel32 is None:
+        return None
+    process_query_limited_information = 0x1000
+    handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if not handle:
+        return None
+    try:
+        # PACKAGE_FAMILY_NAME_MAX_LENGTH is 64, plus the terminating NUL.
+        buffer = ctypes.create_unicode_buffer(65)
+        size = wintypes.UINT(len(buffer))
+        if kernel32.GetPackageFamilyName(handle, ctypes.byref(size), buffer) == 0:
+            return buffer.value
+        return None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _process_api():
     """Configured kernel32 and PROCESSENTRY32W, or (None, None) off Windows."""
     import ctypes
@@ -282,6 +276,9 @@ def _process_api():
         kernel32.QueryFullProcessImageNameW.argtypes = (
             wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
         kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.GetPackageFamilyName.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.UINT), wintypes.LPWSTR)
+        kernel32.GetPackageFamilyName.restype = wintypes.LONG
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         kernel32.CloseHandle.restype = wintypes.BOOL
     except (AttributeError, OSError):

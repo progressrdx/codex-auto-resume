@@ -1,6 +1,7 @@
 """Small authenticated companion UI. No shell commands or App RPC exposed over HTTP."""
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
 import secrets
 import socket
@@ -10,8 +11,6 @@ import threading
 import time
 from urllib.parse import urlsplit, parse_qs
 import uuid
-
-from .runtime import discover_app_path
 
 STATIC = Path(__file__).with_name('static')
 ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
@@ -43,35 +42,21 @@ class Backend:
 
     def __init__(self, args):
         self.args = args
-        self.app = args.app      # None until an engine-backed command needs it
-        self.engine_lock = threading.Lock()
         self.quota_lock = threading.Lock()
         self.mutation_lock = threading.Lock()
         self.cached_quota = None
         self.cached_at = 0
 
-    def engine(self):
-        """Resolve the engine once, on the first command that needs it.
-
-        Keeping this out of startup lets the console list and stop watches
-        while discovery is ambiguous or the App is closed.
-        """
-        with self.engine_lock:
-            if self.app is None:
-                try:
-                    self.app = discover_app_path().expanduser().absolute()
-                except RuntimeError as exc:
-                    raise APIError(str(exc), 409)
-            return self.app
-
     def command(self, *parts):
         cmd = [sys.executable, '-m', 'codex_resume', '--home', str(self.args.home)]
-        if parts[0] in self.ENGINE_COMMANDS:
-            cmd += ['--app', str(self.engine())]
+        # Let the CLI rediscover the engine for each operation after App updates.
+        if self.args.app is not None and parts[0] in self.ENGINE_COMMANDS:
+            cmd += ['--app', str(self.args.app)]
         cmd += ['--state-dir', str(self.args.state_dir), *parts]
         try:
             result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent,
-                                    capture_output=True, text=True, timeout=65)
+                                    env=dict(os.environ, PYTHONIOENCODING='utf-8'),
+                                    capture_output=True, encoding='utf-8', timeout=65)
         except subprocess.TimeoutExpired:
             # start may already have spawned a watcher. Never retry a mutation here.
             raise APIError('操作超时，结果未确认。请刷新监控记录；不要重复点击开启。', 504)

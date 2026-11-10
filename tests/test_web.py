@@ -172,45 +172,35 @@ class LazyEngineTests(unittest.TestCase):
             backend.command(*parts)
         return run.call_args.args[0]
 
-    def test_status_and_stop_never_resolve_the_engine(self):
-        backend = self.backend()
-        with patch('codex_resume.web.discover_app_path',
-                   side_effect=AssertionError('the engine is not needed')):
-            status = self.argv(backend, 'status')
-            stop = self.argv(backend, 'stop', THREAD)
+    def test_status_and_stop_never_pass_an_engine(self):
+        backend = self.backend(Path('/explicit/codex.exe'))
+        status = self.argv(backend, 'status')
+        stop = self.argv(backend, 'stop', THREAD)
         self.assertNotIn('--app', status)
         self.assertNotIn('--app', stop)
         self.assertEqual(status[-1], 'status')
         self.assertEqual(stop[-2:], ['stop', THREAD])
-        self.assertIsNone(backend.app)
 
-    def test_engine_commands_share_one_resolved_path(self):
+    def test_engine_commands_let_each_cli_call_discover_the_app(self):
         backend = self.backend()
-        detected = Path('/detected/codex.exe')
-        with patch('codex_resume.web.discover_app_path', return_value=detected) as discover:
-            first = self.argv(backend, 'list')
-            second = self.argv(backend, 'doctor')
-        discover.assert_called_once_with()
-        expected = str(detected.expanduser().absolute())
-        self.assertEqual(first[first.index('--app') + 1], expected)
-        self.assertEqual(second[second.index('--app') + 1], expected)
+        for parts in [('list',), ('doctor',), ('check', THREAD), ('start', THREAD)]:
+            with self.subTest(command=parts[0]):
+                self.assertNotIn('--app', self.argv(backend, *parts))
 
     def test_ambiguous_discovery_only_fails_engine_calls(self):
         backend = self.backend()
-        with patch('codex_resume.web.discover_app_path',
-                   side_effect=RuntimeError('检测到多个正在运行的 Codex 引擎')):
+        failed = subprocess.CompletedProcess([], 1, stdout='', stderr='检测到多个正在运行的 Codex 引擎')
+        with patch('codex_resume.web.subprocess.run', return_value=failed):
             with self.assertRaises(APIError) as raised:
-                self.argv(backend, 'list')
-            self.assertEqual(raised.exception.status, 409)
-            self.assertIn('多个正在运行', str(raised.exception))
-            status = self.argv(backend, 'status')
+                backend.threads()
+        self.assertEqual(raised.exception.status, 409)
+        self.assertIn('多个正在运行', str(raised.exception))
+        status = self.argv(backend, 'status')
         self.assertNotIn('--app', status)
 
     def test_explicit_app_skips_discovery(self):
         backend = self.backend(Path('/explicit/codex.exe'))
-        with patch('codex_resume.web.discover_app_path',
-                   side_effect=AssertionError('explicit --app must not discover')):
-            argv = self.argv(backend, 'check', THREAD)
+        argv = self.argv(backend, 'check', THREAD)
         self.assertEqual(argv[argv.index('--app') + 1], str(Path('/explicit/codex.exe')))
 
 

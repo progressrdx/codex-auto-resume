@@ -7,10 +7,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from codex_resume.__main__ import main, parser
-from codex_resume.runtime import codex_binary, default_app_path, discover_app_path
+from codex_resume.runtime import (_windows_package_family, codex_binary, default_app_path,
+                                  discover_app_path)
+from codex_resume.web import APIError, Backend
 
 THREAD = '11111111-1111-4111-8111-111111111111'
 # The App is an MSIX package: its processes run from the package directory and
@@ -29,6 +31,7 @@ class ProcessTable:
     def __init__(self):
         self.rows = [(APP_HOST, 1, 'ChatGPT.exe')]
         self.images = {APP_HOST: APP_HOST_IMAGE}
+        self.families = {APP_HOST: 'OpenAI.Codex_2p2nqsd0c76g0'}
         self.next_pid = 5000
 
     def add(self, name, parent, image):
@@ -53,6 +56,8 @@ class ProcessTable:
                                   return_value=list(self.rows)))
         stack.enter_context(patch('codex_resume.runtime._windows_image_path',
                                   side_effect=self.image))
+        stack.enter_context(patch('codex_resume.runtime._windows_package_family',
+                                  side_effect=self.families.get))
         return stack
 
 
@@ -85,7 +90,7 @@ class WindowsDiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.local = Path(self.temp.name)
+        self.local = Path(self.temp.name).resolve()
         self.root = self.local / 'OpenAI' / 'Codex' / 'bin'
         environment = patch.dict(os.environ, {'LOCALAPPDATA': str(self.local)})
         environment.start()
@@ -195,6 +200,19 @@ class WindowsDiscoveryTests(unittest.TestCase):
         table.engine(self.root / 'manual' / 'codex.exe', parent=explorer)
         self.assertEqual(self.discover(table), installed)
 
+    def test_package_like_path_does_not_resolve_an_ambiguous_install(self):
+        legacy = self.binary('codex.exe')
+        self.binary('current', 'codex.exe')
+        table = ProcessTable()
+        launcher = table.add('launcher.exe', 1,
+                             r'C:\Users\Alice\Downloads\WindowsApps\OpenAI.CodexFake\launcher.exe')
+        table.engine(legacy, parent=launcher)
+        with self.assertRaisesRegex(RuntimeError, '无法确认它属于 App'):
+            self.discover(table)
+        table.families[launcher] = 'OpenAI.Codex_0000000000000'
+        with self.assertRaisesRegex(RuntimeError, '无法确认它属于 App'):
+            self.discover(table)
+
     def test_attributed_engine_resolves_an_ambiguous_install(self):
         self.binary('codex.exe')
         current = self.binary('0a1b2c3d4e5f6a7b', 'codex.exe')
@@ -225,6 +243,42 @@ class WindowsDiscoveryTests(unittest.TestCase):
     def test_no_candidate_keeps_the_legacy_default(self):
         self.assertEqual(self.discover(), self.root / 'codex.exe')
 
+    def test_web_recovers_when_the_engine_appears_and_then_changes(self):
+        args = parser().parse_args(['--home', str(self.local), '--state-dir', str(self.local), 'web'])
+        backend = Backend(args)
+
+        def invoke_cli(argv, **_):
+            stream = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(stream):
+                    main(argv[3:])
+            except RuntimeError as exc:
+                return subprocess.CompletedProcess(argv, 1, stdout='', stderr=str(exc))
+            return subprocess.CompletedProcess(argv, 0, stdout=stream.getvalue(), stderr='')
+
+        def check_version(path):
+            if not path.is_file():
+                raise RuntimeError('engine missing')
+
+        with patch('codex_resume.web.subprocess.run', side_effect=invoke_cli), \
+                patch('codex_resume.__main__.discover_app_path', side_effect=self.discover), \
+                patch('codex_resume.__main__.check_version', side_effect=check_version), \
+                patch('codex_resume.__main__.codex_binary',
+                      side_effect=lambda path: codex_binary(path, 'windows')), \
+                patch('codex_resume.__main__.ReadOnlyServer') as reader:
+            reader.return_value.__enter__.return_value.query.return_value = {
+                'data': [], 'nextCursor': None}
+            with self.assertRaisesRegex(APIError, 'engine missing'):
+                backend.threads()
+            first = self.binary('first', 'codex.exe')
+            self.assertEqual(backend.threads(), [])
+            reader.assert_called_once_with(first, self.local)
+            reader.reset_mock()
+            first.unlink()
+            second = self.binary('second', 'codex.exe')
+            self.assertEqual(backend.threads(), [])
+            reader.assert_called_once_with(second, self.local)
+
     def test_macos_keeps_the_fixed_app_bundle(self):
         with patch('codex_resume.runtime._windows_process_table',
                    side_effect=AssertionError('Windows only')):
@@ -237,7 +291,7 @@ class LinkEscapeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.local = Path(self.temp.name)
+        self.local = Path(self.temp.name).resolve()
         self.root = self.local / 'OpenAI' / 'Codex' / 'bin'
         self.root.mkdir(parents=True)
         self.outside = self.local / 'outside'
@@ -276,7 +330,36 @@ class LinkEscapeTests(unittest.TestCase):
         legacy = self.root / 'codex.exe'
         if not file_link(legacy, target):
             self.skipTest('cannot create a file link here')
-        self.assertEqual(self.discover(), legacy)
+        self.assertEqual(self.discover(), target)
+
+    def test_retargeted_directory_alias_cannot_change_the_returned_binary(self):
+        target = self.binary('original', 'codex.exe')
+        outside_binary = self.outside / 'codex.exe'
+        outside_binary.touch()
+        alias = self.root / 'alias'
+        if not directory_link(alias, target.parent):
+            self.skipTest('cannot create a directory link here')
+        selected = self.discover()
+        table = ProcessTable()
+        table.engine(alias / 'codex.exe')
+        running = self.discover(table)
+        if alias.is_symlink():
+            alias.unlink()
+        else:
+            alias.rmdir()  # Windows directory junction
+        if not directory_link(alias, self.outside):
+            self.skipTest('cannot retarget the directory link here')
+        self.assertEqual(selected.resolve(), target)
+        self.assertEqual(running.resolve(), target)
+        self.assertEqual(self.discover(), target)
+
+    def test_redirected_install_root_is_refused(self):
+        (self.outside / 'codex.exe').touch()
+        self.root.rmdir()
+        if not directory_link(self.root, self.outside):
+            self.skipTest('cannot create a directory link here')
+        with self.assertRaisesRegex(RuntimeError, '安装目录被链接重定向'):
+            self.discover()
 
     def test_legacy_default_linking_outside_the_root_is_refused(self):
         outside = self.local / 'elsewhere.exe'
@@ -286,6 +369,31 @@ class LinkEscapeTests(unittest.TestCase):
             self.skipTest('cannot create a file link here')
         with self.assertRaisesRegex(RuntimeError, '安装目录之外'):
             self.discover()
+
+
+class PackageIdentityTests(unittest.TestCase):
+    @patch('codex_resume.runtime._process_api')
+    def test_reads_windows_package_identity_and_closes_the_handle(self, process_api):
+        kernel = Mock()
+        process_api.return_value = (kernel, None)
+        kernel.OpenProcess.return_value = 42
+
+        def get_family(handle, length, buffer):
+            self.assertEqual(handle, 42)
+            self.assertEqual(length._obj.value, len(buffer))
+            buffer.value = 'OpenAI.Codex_2p2nqsd0c76g0'
+            return 0
+
+        kernel.GetPackageFamilyName.side_effect = get_family
+        self.assertEqual(_windows_package_family(APP_HOST), 'OpenAI.Codex_2p2nqsd0c76g0')
+        kernel.OpenProcess.assert_called_once_with(0x1000, False, APP_HOST)
+        kernel.CloseHandle.assert_called_once_with(42)
+
+        kernel.CloseHandle.reset_mock()
+        kernel.GetPackageFamilyName.side_effect = None
+        kernel.GetPackageFamilyName.return_value = 15700  # APPMODEL_ERROR_NO_PACKAGE
+        self.assertIsNone(_windows_package_family(APP_HOST))
+        kernel.CloseHandle.assert_called_once_with(42)
 
 
 class CommandWiringTests(unittest.TestCase):
