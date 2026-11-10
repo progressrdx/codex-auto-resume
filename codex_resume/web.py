@@ -11,6 +11,8 @@ import time
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
+from .runtime import discover_app_path
+
 STATIC = Path(__file__).with_name('static')
 ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
@@ -35,16 +37,38 @@ def thread_id(value):
 
 class Backend:
     """Reuse the guarded CLI, never accept arbitrary paths, prompts or commands."""
+
+    # Only these CLI commands read the engine; status and stop never do.
+    ENGINE_COMMANDS = ('doctor', 'list', 'check', 'start')
+
     def __init__(self, args):
         self.args = args
+        self.app = args.app      # None until an engine-backed command needs it
+        self.engine_lock = threading.Lock()
         self.quota_lock = threading.Lock()
         self.mutation_lock = threading.Lock()
         self.cached_quota = None
         self.cached_at = 0
 
+    def engine(self):
+        """Resolve the engine once, on the first command that needs it.
+
+        Keeping this out of startup lets the console list and stop watches
+        while discovery is ambiguous or the App is closed.
+        """
+        with self.engine_lock:
+            if self.app is None:
+                try:
+                    self.app = discover_app_path().expanduser().absolute()
+                except RuntimeError as exc:
+                    raise APIError(str(exc), 409)
+            return self.app
+
     def command(self, *parts):
-        cmd = [sys.executable, '-m', 'codex_resume', '--home', str(self.args.home),
-               '--app', str(self.args.app), '--state-dir', str(self.args.state_dir), *parts]
+        cmd = [sys.executable, '-m', 'codex_resume', '--home', str(self.args.home)]
+        if parts[0] in self.ENGINE_COMMANDS:
+            cmd += ['--app', str(self.engine())]
+        cmd += ['--state-dir', str(self.args.state_dir), *parts]
         try:
             result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent,
                                     capture_output=True, text=True, timeout=65)
