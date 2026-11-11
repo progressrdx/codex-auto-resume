@@ -1,6 +1,6 @@
 # 版本记录
 
-## 0.3.5 — Windows 引擎自动发现与 Web 恢复（2026-11-10）
+## 0.3.5 — Windows 引擎自动发现与 Web 恢复（2026-11-11）
 
 - 合并 [PR #4](https://github.com/progressrdx/codex-auto-resume/pull/4)，支持自动发现 Windows 旧版默认路径和新版一级哈希目录中的 `codex.exe`。感谢 [TheM14](https://github.com/TheM14)。
 - 使用 Windows 提供的应用包身份确认进程归属，执行前选择安装目录内已校验的真实路径。无法确认且存在多个候选时，提示选择明确路径。
