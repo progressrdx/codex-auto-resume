@@ -1,0 +1,22 @@
+name: Native recovery experiment
+on:
+  push:
+    branches: [experiment/native-recovery-20261122]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler libasound2-dev libcap-dev libseccomp-dev libssl-dev pkg-config clang cmake libudev-dev
+      - name: Compile matching engine and run admission tests
+        run: sh scripts/test_native_recovery.sh
