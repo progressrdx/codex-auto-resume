@@ -179,6 +179,9 @@ def quota_status(response, now, limit_id=None, stale_count=0):
     waiting instead of looping indefinitely.
     """
     _MAX_STALE = 60  # ~1 hour of 60-second retries before giving up
+    ordinary_usage = response.get('ordinaryUsageAllowed')
+    if ordinary_usage is not None and type(ordinary_usage) is not bool:
+        return False, None, '普通用量授权格式不受支持'
     buckets = response.get('rateLimitsByLimitId')
     if isinstance(buckets, dict) and buckets:
         if limit_id is None and set(buckets) != {'codex'}:
@@ -220,4 +223,6 @@ def quota_status(response, now, limit_id=None, stale_count=0):
         return False, max(now + 60, max(exhausted) + 15), '额度仍不足，等待实际重置后再检查'
     if reached:
         return False, now + 60, '服务仍标记额度耗尽，稍后再检查'
+    if ordinary_usage is not True and 'ordinaryUsageAllowed' in response:
+        return False, now + 60, '服务尚未确认普通用量恢复，稍后重新读取额度'
     return True, now, '所选额度桶的所有窗口均有余额'

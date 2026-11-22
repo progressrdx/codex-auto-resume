@@ -17,7 +17,7 @@ from codex_resume.controller import Controller
 from codex_resume.policy import decide, fingerprint, quota_status, latest_turn
 from codex_resume.rpc import ReadOnlyServer
 from codex_resume.store import Store
-from codex_resume.tasks import list_conversations, stored_assessment, inspect_task
+from codex_resume.tasks import list_conversations, read_stored_thread, stored_assessment, inspect_task
 from codex_resume.runtime import WINDOWS_PIPE, codex_binary, default_app_path
 
 THREAD = '11111111-1111-4111-8111-111111111111'
@@ -234,6 +234,14 @@ class PolicyTests(unittest.TestCase):
     def test_available_quota(self):
         self.assertTrue(quota_status(quota(), 1000)[0])
 
+    def test_ordinary_usage_requires_backend_confirmation_when_reported(self):
+        for value, expected in ((True, (True, 1000)), (False, (False, 1060)),
+                                (None, (False, 1060)), (1, (False, None))):
+            with self.subTest(value=value):
+                response = dict(quota(), ordinaryUsageAllowed=value)
+                self.assertEqual(quota_status(response, 1000)[:2], expected)
+        self.assertFalse(quota_status(dict(quota(100), ordinaryUsageAllowed=True), 1000)[0])
+
     def test_weekly_limit_overrides_short_reset(self):
         ready, when, _ = quota_status(quota(100, 100), 1000)
         self.assertFalse(ready); self.assertEqual(when, 8015)
@@ -282,6 +290,28 @@ class TaskDiscoveryTests(unittest.TestCase):
             self.assertEqual(result['connection'], 'waiting')
             self.assertEqual(result['source'], 'history')
 
+    def test_paginated_history_reads_only_newest_turn_without_loading_items(self):
+        server = unittest.mock.Mock()
+        thread = dict(self.stored(), historyMode='paginated', turns=[])
+        server.query.side_effect = [
+            {'thread': thread}, {'data': self.stored('failed', 'usageLimitExceeded')['turns'],
+                                 'nextCursor': 'older-turn'}]
+        result = stored_assessment(read_stored_thread(server, THREAD), THREAD)
+        self.assertEqual(result['taskState'], 'quota_limited')
+        self.assertEqual(result['decision'], 'wait')
+        self.assertEqual(server.query.call_args_list, [
+            unittest.mock.call('thread/read', {'threadId': THREAD}),
+            unittest.mock.call('thread/turns/list', {'threadId': THREAD, 'limit': 1,
+                                                   'sortDirection': 'desc', 'itemsView': 'notLoaded'})])
+
+    def test_incomplete_paginated_history_does_not_become_an_empty_task(self):
+        server = unittest.mock.Mock()
+        thread = dict(self.stored(), historyMode='paginated', turns=[])
+        server.query.side_effect = [{'thread': thread}, {'data': [], 'nextCursor': 'more'}]
+        result = stored_assessment(read_stored_thread(server, THREAD), THREAD)
+        self.assertEqual(result['taskState'], 'unknown')
+        self.assertFalse(result['canMonitor'])
+
     def test_empty_idle_interrupted_and_unknown_cannot_enroll(self):
         for status in ('completed','interrupted','failed','unknown'):
             self.assertFalse(stored_assessment(self.stored(status), THREAD)['canMonitor'])
@@ -299,7 +329,8 @@ class TaskDiscoveryTests(unittest.TestCase):
     def test_unloaded_selection_falls_back_to_read_only_history(self, desktop, server, _open_thread):
         desktop.return_value.__enter__.return_value.snapshot.side_effect = ThreadUnavailable()
         reader = server.return_value.__enter__.return_value
-        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored('inProgress')}]
+        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored()},
+                                    {'thread': self.stored('inProgress')}]
         result = inspect_task(Path('/home'), Path('/app'), THREAD)
         self.assertTrue(result['canMonitor'])
         reader.query.assert_called_with('thread/read', {'threadId':THREAD, 'includeTurns':True})
@@ -311,7 +342,8 @@ class TaskDiscoveryTests(unittest.TestCase):
         import socket
         desktop.return_value.__enter__.return_value.snapshot.side_effect = socket.timeout
         reader = server.return_value.__enter__.return_value
-        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored('inProgress')}]
+        reader.query.side_effect = [{'data':[], 'nextCursor':None}, {'thread': self.stored()},
+                                    {'thread': self.stored('inProgress')}]
         result = inspect_task(Path('/home'), Path('/app'), THREAD)
         self.assertTrue(result['canMonitor'])
         self.assertEqual(result['source'], 'history')
@@ -346,7 +378,8 @@ class TaskDiscoveryTests(unittest.TestCase):
     def test_live_reopen_stops_after_bounded_attempts(self, sleep, desktop, server, open_thread):
         desktop.return_value.__enter__.return_value.snapshot.side_effect = ThreadUnavailable()
         reader = server.return_value.__enter__.return_value
-        reader.query.side_effect = [{'data': [], 'nextCursor': None}, {'thread': self.stored('interrupted')}]
+        reader.query.side_effect = [{'data': [], 'nextCursor': None}, {'thread': self.stored()},
+                                    {'thread': self.stored('interrupted')}]
 
         result = inspect_task(Path('/home'), Path('/app'), THREAD)
 
@@ -470,6 +503,18 @@ class ControllerTests(unittest.TestCase):
         self.controller.clock = lambda: 2100
         self.assertTrue(self.controller.step())
         self.assertEqual(self.reads, 2); self.assertFalse(self.desktop.calls)
+
+    def test_current_quota_requires_service_confirmation_before_recording_attempt(self):
+        self.quota = dict(quota(), ordinaryUsageAllowed=None)
+        self.assertTrue(self.controller.step())
+        self.assertEqual(self.store.get(THREAD)['status'], 'waiting_quota')
+        self.assertEqual(self.store.count(THREAD), 0)
+        self.assertFalse(self.desktop.calls)
+        self.controller.clock = lambda: 1060
+        self.quota['ordinaryUsageAllowed'] = True
+        self.assertTrue(self.controller.step())
+        self.assertEqual(self.store.count(THREAD), 1)
+        self.assertEqual(len(self.desktop.calls), 1)
 
     def test_pause_during_wait(self):
         self.quota = quota(100); self.controller.step(); self.store.stop(THREAD)

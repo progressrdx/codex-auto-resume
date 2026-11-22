@@ -13,7 +13,7 @@ from .policy import quota_status
 from .rpc import ReadOnlyServer
 from .runtime import codex_binary, default_app_path, discover_app_path, platform_name, process_exists
 from .store import Store
-from .tasks import inspect_task, list_conversations, stored_assessment
+from .tasks import inspect_task, list_conversations, read_stored_thread, stored_assessment
 
 
 def identifier(value):
@@ -178,8 +178,8 @@ def serve_watch(args, store):
         with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
                 return False
-            saved = reader.query('thread/read', {'threadId': tid, 'includeTurns': True})
-        if not stored_assessment(saved.get('thread'), tid)['canMonitor']:
+            saved = read_stored_thread(reader, tid)
+        if not stored_assessment(saved, tid)['canMonitor']:
             return False
         if not store.get(tid)['enabled']:
             return False
@@ -207,6 +207,36 @@ def serve_watch(args, store):
             quota.__exit__(None, None, None)
 
 
+def diagnose(home, app_path, version):
+    result = {'app': version, 'ipc': 'unavailable', 'quotaRead': 'unavailable',
+              'autoResumeAllowed': False, 'ready': False, 'nextCheck': None, 'rateLimits': None,
+              'note': '握手与额度诊断不代表所选任务通过了实时续跑检查'}
+    try:
+        with ReadOnlyServer(codex_binary(app_path), home) as server:
+            quota = server.query('account/rateLimits/read')
+        if not isinstance(quota, dict):
+            raise RuntimeError('额度回复格式不受支持')
+        ready, next_check, reason = quota_status(quota, time.time())
+        result.update(quotaRead='ok', ready=ready, nextCheck=next_check,
+                      rateLimits=quota.get('rateLimits'))
+    except TimeoutError:
+        reason = '额度查询超时'
+    except PermissionError:
+        reason = '额度查询进程或账户目录访问被拒绝'
+    except (OSError, RuntimeError, ValueError):
+        reason = '无法读取真实额度；请检查只读查询进程、目录权限、登录和网络'
+    result.update(reason=reason, quotaReason=reason)
+    try:
+        with Desktop(home, app_path, read_only=True):
+            pass
+        result.update(ipc='connected', ipcReason='旧版桌面接口握手成功，所选任务的实时协议尚未核验')
+    except PermissionError:
+        result['ipcReason'] = '桌面套接字或管道访问被拒绝'
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        result['ipcReason'] = '旧版桌面接口握手未完成；请检查应用是否运行以及协议是否兼容'
+    return result
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     # status/stop never touch the engine; discovery ambiguity must not block
@@ -229,21 +259,12 @@ def main(argv=None):
         result = inspect_task(args.home, args.app, args.thread, list_timeout=args.list_timeout)
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
-    if args.command in ('doctor', 'list'):
+    if args.command == 'doctor':
+        output(diagnose(args.home, args.app, version))
+        return
+    if args.command == 'list':
         with ReadOnlyServer(codex_binary(args.app), args.home) as server:
-            if args.command == 'list':
-                output(list_conversations(server, timeout=args.list_timeout))
-                return
-            with Desktop(args.home, args.app, read_only=True):
-                pass
-            quota = server.query('account/rateLimits/read')
-            ready, next_check, reason = quota_status(quota, time.time())
-            output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
-                    'autoResumeAllowed': True,
-                    'ready': ready, 'nextCheck': next_check,
-                    'reason': reason, 'quotaReason': reason,
-                    'rateLimits': quota.get('rateLimits'),
-                    'note': '只读探测成功不代表某个具体任务已可续跑'})
+            output(list_conversations(server, timeout=args.list_timeout))
         return
     store = Store(args.state_dir)
     try:
@@ -330,7 +351,6 @@ def cli():
         sys.exit(130)
     except Exception as exc:
         # Known local errors contain no session content. Other exceptions stay generic.
-        from .app import AppError
         if isinstance(exc, (AppError, RuntimeError, ValueError)):
             print(str(exc), file=sys.stderr)
         else:

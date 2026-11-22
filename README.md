@@ -158,7 +158,7 @@ Windows (PowerShell or Command Prompt):
 .\resume.cmd doctor
 ```
 
-`doctor` is read-only. It checks the App version, local connection, and usage windows without running a model or selecting a task.
+`doctor` is read-only. It reports the local connection and usage read separately, without running a model or selecting a task. A live check of the selected task determines whether it can continue.
 
 #### 3. Start the local dashboard
 
@@ -313,6 +313,8 @@ On Windows, use `git pull`, `.\resume.cmd doctor`, and `.\resume.cmd web`.
 Updating the checkout does not clear the persistent budget or deduplication ledger. Restarting the Web server rotates the browser credential. Running watchers do not hot-reload new source code.
 
 ## Current validation status
+
+The macOS `26.1117.41037` package lacks the legacy IPC message names used by this tool. Auto-resume compatibility with this build remains unverified. The Windows `26.1117.4957.0` release manifest was checked. Protocol inspection and on-device validation are pending. See the [current compatibility report](docs/latest-compatibility-check.md).
 
 Validated locally:
 

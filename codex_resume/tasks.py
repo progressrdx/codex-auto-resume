@@ -52,10 +52,36 @@ def list_conversations(server, archive_filters=(False, True), timeout=55):
     return rows
 
 
-def stored_assessment(thread, thread_id):
-    """Persisted turns may qualify for enrollment, NEVER for dispatch."""
+def _require_selected_thread(thread, thread_id):
     if not isinstance(thread, dict) or thread.get('id') != thread_id:
         raise RuntimeError('读取结果与所选对话不匹配')
+
+
+def read_stored_thread(server, thread_id):
+    """Read the newest persisted turn using the thread's declared history mode."""
+    params = {'threadId': thread_id}
+    thread = server.query('thread/read', params).get('thread')
+    _require_selected_thread(thread, thread_id)
+    if thread.get('ephemeral') is not False:
+        return thread
+    mode = thread.get('historyMode', 'legacy')
+    if mode == 'legacy':
+        thread = server.query('thread/read', dict(params, includeTurns=True)).get('thread')
+        _require_selected_thread(thread, thread_id)
+        return thread
+    if mode != 'paginated':
+        return dict(thread, turns=None)
+    page = server.query('thread/turns/list', dict(params, limit=1, sortDirection='desc',
+                                                   itemsView='notLoaded'))
+    turns = page.get('data') if isinstance(page, dict) else None
+    if not isinstance(turns, list) or len(turns) > 1 or (not turns and page.get('nextCursor') is not None):
+        return dict(thread, turns=None)
+    return dict(thread, turns=turns)
+
+
+def stored_assessment(thread, thread_id):
+    """Persisted turns may qualify for enrollment, NEVER for dispatch."""
+    _require_selected_thread(thread, thread_id)
     result = {'threadId': thread_id, 'title': thread.get('name') or thread.get('preview'),
               'source': 'history', 'connection': 'waiting', 'decision': 'stop',
               'canMonitor': False, 'taskState': 'unknown',
@@ -151,5 +177,4 @@ def inspect_task(home, app_path, thread_id, list_timeout=55):
             if attempt + 1 < LIVE_REOPEN_ATTEMPTS and remaining > 0:
                 time.sleep(min(LIVE_REOPEN_RETRY_INTERVAL, remaining))
     with ReadOnlyServer(codex_binary(app_path), home) as server:
-        response = server.query('thread/read', {'threadId': thread_id, 'includeTurns': True})
-    return stored_assessment(response.get('thread'), thread_id)
+        return stored_assessment(read_stored_thread(server, thread_id), thread_id)
