@@ -1,8 +1,9 @@
 #!/bin/sh
-# Build the matching upstream CLI in an isolated checkout and exercise its
+# Build the matching upstream core in an isolated checkout and exercise its
 # admission checks. This uses upstream test sessions, never the desktop account.
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 tag=rust-v0.171.0-alpha.13
 command -v cargo >/dev/null || { echo 'Rust 1.99.1 and Cargo are required.' >&2; exit 1; }
 probe_dir=$(mktemp -d)
@@ -34,7 +35,8 @@ for i in range(1, len(parts)):
                       parts[i], flags=re.M)
 lock.write_text("[[package]]".join(parts))
 PY
-cargo build --locked -p codex-cli --bin codex
+cp "$script_dir/native_quota_probe.rs" core/tests/native_quota_probe.rs
+cargo test --locked -p codex-core --test native_quota_probe
 for name in saved_message_wake_checks_the_last_started_turn_during_admission recovery_rejects_active_turn_without_injecting_or_applying_settings; do
     cargo test --locked -p codex-core --lib "$name" > "$probe_dir/$name.log" || {
         cat "$probe_dir/$name.log"
