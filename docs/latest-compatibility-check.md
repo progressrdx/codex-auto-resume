@@ -34,6 +34,12 @@ Codex Auto Resume `0.3.5` 在 macOS `26.1117.41037` 上发现了续跑协议兼�
 
 执行 `python3 -m unittest discover -s tests -v`。测试报告计数 178，记有 2 项跳过、3 处错误。3 处均在执行环境拒绝绑定 Unix 或本地回环 socket 时出现。单独运行不依赖这些 socket 的测试，174 项通过、2 项跳过。
 
+### 2026-11-23 隔离验证
+
+- 当前读取与诊断修改通过 macOS、Ubuntu 和 Windows 回归。三个平台均收集 187 项 Python 测试，分别跳过 2、4、10 项，均无失败；各平台 26 项 Node 测试通过。[回归记录](https://github.com/progressrdx/codex-auto-resume/actions/runs/45019712768)
+- 用桌面内置 CLI 对应的上游标签 `rust-v0.171.0-alpha.13` 编译引擎。在同一个引擎实例内，模拟服务先返回结构化额度错误，下一次调用接受请求。对原失败轮次执行一次空唤醒后收到完成回执，再次使用原轮次 ID 被拒绝。另两条原生测试验证活动轮次和已被取代的轮次受保护。[测试代码及实验记录](https://github.com/progressrdx/codex-auto-resume/pull/6) · [通过的运行](https://github.com/progressrdx/codex-auto-resume/actions/runs/45201457996)
+- 空唤醒依赖原会话引擎内部的 `continue_turn_if_idle`。当前桌面对外协议尚无已验证的调用路径。尚未在安装版 App 上完成真实发送或真实账户的自然额度重置验证。
+
 ## 历史记录 · 2026-11-03
 
 ### 结论
