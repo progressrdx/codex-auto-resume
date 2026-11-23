@@ -1,11 +1,14 @@
 name: Native recovery experiment
 on:
-  push:
-    branches: [experiment/native-recovery-20261122]
+  pull_request:
+    paths:
+      - scripts/test_native_recovery.sh
+      - .github/workflows/native-recovery.yml
 permissions:
   contents: read
 jobs:
   native:
+    if: github.head_ref == 'experiment/native-recovery-20261122'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
