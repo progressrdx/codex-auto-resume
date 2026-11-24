@@ -37,7 +37,7 @@ When a long Codex task hits a usage limit, the work can stop even though the tas
 It does **not** switch accounts, buy credits, redeem resets, approve tool calls, create replacement conversations, or take over every unfinished task.
 
 > [!IMPORTANT]
-> **Before installing or updating Codex Desktop:** Automatic continuation in an existing conversation is unverified on macOS `26.1117.41037` and Windows `26.1117.4957.0`. The successful real-account runs below were on older builds. A successful `doctor` or a visible conversation in the dashboard does not confirm that a continuation can be sent. [Compatibility report](docs/latest-compatibility-check.md).
+> **Desktop compatibility.** On macOS `26.1117.41037`, this plugin cannot currently resume work in the original desktop conversation. On Windows `26.1117.4957.0`, support for automatic continuation is unknown. [Compatibility details](docs/latest-compatibility-check.md).
 >
 > This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful macOS runs and one successful Windows 11 run across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
 
@@ -316,7 +316,7 @@ Updating the checkout does not clear the persistent budget or deduplication ledg
 
 ## Current validation status
 
-The macOS `26.1117.41037` package lacks the legacy IPC message names used by this tool. Auto-resume compatibility with this build remains unverified. The Windows `26.1117.4957.0` release manifest was checked. Protocol inspection and on-device validation are pending. See the [current compatibility report](docs/latest-compatibility-check.md).
+On macOS `26.1117.41037`, the desktop package no longer contains the message names used by the plugin to resume a conversation. For Windows `26.1117.4957.0`, the release manifest identifies the build but gives no information about its continuation interface. [Compatibility details](docs/latest-compatibility-check.md).
 
 Validated locally:
 
