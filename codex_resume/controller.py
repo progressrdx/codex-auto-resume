@@ -2,7 +2,7 @@
 import time
 import socket
 
-from .app import ConnectionUnavailable
+from .app import AppUpdatedBeforeDispatch, ConnectionUnavailable
 from .policy import decide, fingerprint, quota_status
 
 
@@ -81,6 +81,11 @@ class Controller:
                         dispatch_guard=lambda: self.store.can_dispatch(
                             self.thread_id, decision.turn_id, message_id))
                     self.store.acknowledged(self.thread_id, decision.turn_id, resumed)
+                except AppUpdatedBeforeDispatch:
+                    self.store.release_unsent(self.thread_id, decision.turn_id, message_id)
+                    self.store.update(self.thread_id, 'waiting_connection',
+                                      'Codex 已更新，将重新连接并核验任务与额度', only_enabled=True)
+                    return True
                 except Exception:
                     return self.end('uncertain', '续跑没有得到可验证的确认；请在 App 检查，不会重发')
                 self.waiting_baseline = None

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from codex_resume.app import (AppError, Desktop, MAX_FRAME, ThreadUnavailable,
+from codex_resume.app import (AppError, AppUpdatedBeforeDispatch, Desktop, MAX_FRAME, ThreadUnavailable,
                               WindowsPipe, check_version, open_selected_thread)
 from codex_resume.__main__ import watch_process_spec
 from codex_resume.controller import Controller
@@ -28,6 +28,20 @@ class SourceLaunchTests(unittest.TestCase):
         return SimpleNamespace(home=Path('/users/test/.codex'), app=Path('/Applications/ChatGPT.app'),
                                state_dir=Path('/users/test/.codex-auto-resume'), thread=THREAD,
                                max_resumes=3, limit_id=None)
+
+    def test_declared_cli_entry_survives_layout_change(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder)
+            package = app / 'Contents/Resources/codex-cli'
+            engine = package / 'next-layout' / 'engine'
+            engine.parent.mkdir(parents=True)
+            engine.touch()
+            manifest = package / 'codex-package.json'
+            manifest.write_text(json.dumps({'entrypoint': 'next-layout/engine'}))
+            self.assertEqual(codex_binary(app, 'macos'), engine.resolve())
+            manifest.write_text(json.dumps({'entrypoint': '../outside'}))
+            with self.assertRaises(RuntimeError):
+                codex_binary(app, 'macos')
 
     @patch('codex_resume.__main__.sys.executable', '/usr/bin/python3')
     def test_source_watcher_keeps_module_launch(self):
@@ -471,6 +485,17 @@ class ControllerTests(unittest.TestCase):
         self.controller = Controller(THREAD, self.store, lambda: self.desktop, read, clock=lambda: 1000)
     def tearDown(self):
         self.store.close(); self.temp.cleanup()
+
+    def test_update_before_dispatch_rechecks_quota_without_spending_budget(self):
+        self.store.arm(THREAD, 1)
+        with patch.object(self.desktop, 'resume', side_effect=AppUpdatedBeforeDispatch()):
+            self.assertTrue(self.controller.step())
+        self.assertEqual(self.store.count(THREAD), 0)
+        self.assertEqual(self.store.get(THREAD)['enabled'], 1)
+        self.assertTrue(self.controller.step())
+        self.assertEqual(self.reads, 2)
+        self.assertEqual(len(self.desktop.calls), 1)
+        self.assertEqual(self.store.count(THREAD), 1)
 
     def test_resume_records_ack(self):
         self.assertTrue(self.controller.step())

@@ -1,4 +1,5 @@
 """Operating-system paths and process helpers for the Codex desktop app."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -45,6 +46,20 @@ def codex_binary(app_path, system=None):
                                path / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe'))
         return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
     resources = path / 'Contents' / 'Resources'
+    package = resources / 'codex-cli'
+    manifest = package / 'codex-package.json'
+    if manifest.is_file():
+        try:
+            entry = json.loads(manifest.read_text(encoding='utf-8'))['entrypoint']
+            if not isinstance(entry, str) or not entry or Path(entry).is_absolute():
+                raise ValueError('invalid relative entrypoint')
+            binary = (package / entry).resolve()
+            binary.relative_to(package.resolve())
+            if not binary.is_file():
+                raise ValueError('entrypoint missing')
+            return binary
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+            raise RuntimeError('Codex 安装包声明的引擎入口无效') from exc
     # Newer macOS builds package the CLI as a versioned app resource bundle.
     candidates = (resources / 'codex-cli' / 'bin' / 'codex', resources / 'codex')
     return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])

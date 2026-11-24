@@ -160,19 +160,11 @@ def serve_watch(args, store):
                 time.sleep(0.1)
     else:
         store.lock(args.thread, inherited_fd=args.lock_fd)
-    quota = None
     def read_quota():
-        nonlocal quota
-        if quota is None:
-            reader = ReadOnlyServer(codex_binary(args.app), args.home)
-            reader.__enter__()
-            quota = reader
-        try:
-            return quota.query('account/rateLimits/read')
-        except Exception:
-            quota.__exit__(None, None, None)
-            quota = None
-            raise
+        # Resolve the installed engine on each due check, including after updates.
+        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
+            return reader.query('account/rateLimits/read')
+
     def load_original(tid):
         # Revalidate eligibility before navigation as well as before dispatch.
         with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
@@ -188,23 +180,19 @@ def serve_watch(args, store):
                             open_thread=load_original,
                             notify=lambda status, reason: notify_user(args.thread, status, reason))
     previous = None
-    try:
-        while controller.step():
-            state = store.get(args.thread)
-            status = (state['status'], state['reason'])
-            if status != previous:
-                output({'time': time.time(), 'status': status[0], 'reason': status[1]})
-                previous = status
-            # Small cancellable sleeps; after wake from system sleep step() rechecks everything.
-            for _ in range(30):
-                if not store.get(args.thread)['enabled']:
-                    return
-                time.sleep(1)
+    while controller.step():
         state = store.get(args.thread)
-        output({'status': state['status'], 'reason': state['reason']})
-    finally:
-        if quota:
-            quota.__exit__(None, None, None)
+        status = (state['status'], state['reason'])
+        if status != previous:
+            output({'time': time.time(), 'status': status[0], 'reason': status[1]})
+            previous = status
+        # Small cancellable sleeps; after wake from system sleep step() rechecks everything.
+        for _ in range(30):
+            if not store.get(args.thread)['enabled']:
+                return
+            time.sleep(1)
+    state = store.get(args.thread)
+    output({'status': state['status'], 'reason': state['reason']})
 
 
 def diagnose(home, app_path, version):
