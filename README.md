@@ -37,6 +37,8 @@ When a long Codex task hits a usage limit, the work can stop even though the tas
 It does **not** switch accounts, buy credits, redeem resets, approve tool calls, create replacement conversations, or take over every unfinished task.
 
 > [!IMPORTANT]
+> **Before installing or updating Codex Desktop:** Automatic continuation in an existing conversation is unverified on macOS `26.1117.41037` and Windows `26.1117.4957.0`. The successful real-account runs below were on older builds. A successful `doctor` or a visible conversation in the dashboard does not confirm that a continuation can be sent. [Compatibility report](docs/latest-compatibility-check.md).
+>
 > This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful macOS runs and one successful Windows 11 run across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
 
 ## Preview

@@ -59,6 +59,36 @@ class SourceLaunchTests(unittest.TestCase):
                          'C:/Users/test/AppData/Local/OpenAI/Codex/bin/codex.exe')
         self.assertEqual(codex_binary(path, 'windows'), path)
 
+    def test_watcher_preserves_automatic_and_explicit_engine_selection(self):
+        args = self.args()
+        command, _, _ = watch_process_spec(args)
+        self.assertEqual(command[command.index('--app') + 1], str(args.app))
+        args.app = None
+        command, _, _ = watch_process_spec(args)
+        self.assertNotIn('--app', command)
+
+    def test_running_watch_reconnects_to_newly_discovered_engine(self):
+        from codex_resume.__main__ import serve_watch
+        args = self.args()
+        args.app = None
+        args.lock_fd = None
+        old, new = Path('old/codex.exe'), Path('new/codex.exe')
+        store = unittest.mock.Mock()
+        store.get.return_value = {'status': 'stopped', 'reason': 'finished'}
+        with patch('codex_resume.__main__.discover_app_path', side_effect=[old, new]), \
+             patch('codex_resume.__main__.Desktop') as desktop, \
+             patch('codex_resume.__main__.Controller') as controller, \
+             patch('codex_resume.__main__.output'):
+            def step():
+                connect = controller.call_args.args[2]
+                connect()
+                connect()
+                return False
+            controller.return_value.step.side_effect = step
+            serve_watch(args, store)
+        self.assertEqual(desktop.call_args_list, [unittest.mock.call(args.home, old),
+                                                 unittest.mock.call(args.home, new)])
+
     def test_windows_watcher_does_not_receive_posix_descriptor(self):
         args = self.args()
         command, _, _ = watch_process_spec(args, None)

@@ -64,8 +64,10 @@ def output(value):
 
 def watch_process_spec(args, lock_fd=None):
     """Build an independent watcher command for the source checkout."""
-    cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
-                    '--state-dir', str(args.state_dir), '_watch', args.thread,
+    cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home)]
+    if args.app is not None:
+        cmd += ['--app', str(args.app)]
+    cmd += ['--state-dir', str(args.state_dir), '_watch', args.thread,
                     '--max-resumes', str(args.max_resumes)]
     if lock_fd is not None:
         cmd += ['--lock-fd', str(lock_fd)]
@@ -160,14 +162,21 @@ def serve_watch(args, store):
                 time.sleep(0.1)
     else:
         store.lock(args.thread, inherited_fd=args.lock_fd)
+    app_path = args.app
+
+    def connect_desktop():
+        nonlocal app_path
+        app_path = args.app if args.app is not None else discover_app_path()
+        return Desktop(args.home, app_path)
+
     def read_quota():
         # Resolve the installed engine on each due check, including after updates.
-        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
+        with ReadOnlyServer(codex_binary(app_path), args.home) as reader:
             return reader.query('account/rateLimits/read')
 
     def load_original(tid):
         # Revalidate eligibility before navigation as well as before dispatch.
-        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
+        with ReadOnlyServer(codex_binary(app_path), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
                 return False
             saved = read_stored_thread(reader, tid)
@@ -175,8 +184,8 @@ def serve_watch(args, store):
             return False
         if not store.get(tid)['enabled']:
             return False
-        open_selected_thread(args.app, tid)
-    controller = Controller(args.thread, store, lambda: Desktop(args.home, args.app), read_quota, args.limit_id,
+        open_selected_thread(app_path, tid)
+    controller = Controller(args.thread, store, connect_desktop, read_quota, args.limit_id,
                             open_thread=load_original,
                             notify=lambda status, reason: notify_user(args.thread, status, reason))
     previous = None
@@ -230,7 +239,8 @@ def main(argv=None):
     # status/stop never touch the engine; discovery ambiguity must not block
     # them. web defers discovery to the calls that need the engine, so its
     # watch list and stop action stay available when discovery is ambiguous.
-    if args.app is None and args.command != 'web':
+    auto_discover = args.app is None
+    if auto_discover and args.command != 'web':
         args.app = (default_app_path() if args.command in ('status', 'stop')
                     else discover_app_path())
     args.home = args.home.expanduser().absolute()
@@ -268,6 +278,8 @@ def main(argv=None):
             store.stop(args.thread)
             output({'stopped': args.thread, 'note': '只取消未来自动续跑；已经发送的消息不会被撤回'})
         elif args.command == '_watch':
+            if auto_discover:
+                args.app = None
             serve_watch(args, store)
         elif args.command == 'start':
             # Validate the exact thread before arming a background process.
@@ -289,6 +301,8 @@ def main(argv=None):
             windows = platform_name() == 'windows'
             lock_fd = None if windows else store.lock_file.fileno()
             log = args.state_dir / (args.thread + '.log')
+            if auto_discover:
+                args.app = None
             cmd, child_cwd, child_env = watch_process_spec(args, lock_fd)
             try:
                 if log.is_symlink():

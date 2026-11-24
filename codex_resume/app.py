@@ -342,7 +342,12 @@ class Desktop:
     def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
         if self.read_only:
             raise AppError('只读诊断连接禁止自动续跑')
-        current_app = check_version(self.app_path, self.system)
+        try:
+            current_app = check_version(self.app_path, self.system)
+        except AppError as exc:
+            # The old installation can disappear during an update. No write has
+            # happened; the next connection must identify the installation anew.
+            raise AppUpdatedBeforeDispatch(str(exc)) from exc
         # App/CLI updates must not reuse an already-open connection:
         # Reconnect and revalidate live state after an update, even when protocol
         # versions appear unchanged.
