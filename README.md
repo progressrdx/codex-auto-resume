@@ -37,9 +37,9 @@ When a long Codex task hits a usage limit, the work can stop even though the tas
 It does **not** switch accounts, buy credits, redeem resets, approve tool calls, create replacement conversations, or take over every unfinished task.
 
 > [!IMPORTANT]
-> **Desktop compatibility.** On macOS `26.1117.41037`, this plugin cannot currently resume work in the original desktop conversation. On Windows `26.1117.4957.0`, support for automatic continuation is unknown. [Compatibility details](docs/latest-compatibility-check.md).
+> On macOS `26.1117.41037`, the plugin cannot currently resume work in the original desktop conversation. [Desktop compatibility details](docs/latest-compatibility-check.md).
 >
-> This is an experimental, unofficial companion project and is not affiliated with or endorsed by OpenAI. The project owner has completed two successful macOS runs and one successful Windows 11 run across natural usage reset boundaries. See [Current validation status](#current-validation-status) for the tested scope and remaining limitations.
+> This is an unofficial, experimental project.
 
 ## Preview
 
@@ -66,24 +66,11 @@ It does **not** switch accounts, buy credits, redeem resets, approve tool calls,
 - macOS, or Windows 11
 - Python 3.9 or newer
 - The Codex desktop app installed, signed in, and kept open
-- Previously inspected macOS builds (not an allowlist): `26.820.60940 / build 7119`, `26.1002.52244 / build 13536`
-- Previously inspected Windows App/CLI pairs (not an allowlist): `26.901.31953.0` / `0.153.1`, `26.1021.3705.0` / `0.164.0-alpha.11.1`
 - Default path: macOS `/Applications/ChatGPT.app`; the Windows engine is auto-detected under `%LOCALAPPDATA%\OpenAI\Codex\bin\`, including the newer `<hash>` subdirectory layout. A running engine is preferred only when its process tree belongs to the App, and `--app` overrides detection entirely
 
 Run the Windows version from native PowerShell or Command Prompt, not from inside WSL. This helper connects to the native Windows Codex App named pipe. The Codex Windows App itself supports native Windows and optional WSL workspaces, but those are different execution environments.
 
-App/CLI version numbers are diagnostic metadata, not an allowlist. New versions
-may attempt monitoring and continuation without a plugin update solely for their
-version number. Each continuation still requires compatible live protocol/state,
-confirmed quota, the original selected task, and cancellation, budget and deduplication
-checks. Unknown protocols or missing required safety state stop automation. The
-verified v11 snapshot protocol permits an omitted optional `ephemeral` field;
-only that omission is normalized to false, without an App version list. Explicit
-null/true and missing required state remain blocked. Compatibility with future
-protocol changes is not guaranteed. The newer Windows
-pair was checked by static inspection and offline regressions; **native Windows sending and natural
-reset validation have not been repeated for this pair**. Previous Windows end-to-end
-results apply to the older pair only. See [Windows compatibility evidence](docs/windows-compatibility.md).
+The plugin uses the interfaces provided by the desktop app. A version change alone does not require a plugin update. After a disconnection, the watcher keeps the selected task and checks its state, quota, and remaining resume budget when it reconnects.
 
 ### Let Codex start it for you (recommended for beginners)
 
@@ -314,43 +301,9 @@ On Windows, use `git pull`, `.\resume.cmd doctor`, and `.\resume.cmd web`.
 
 Updating the checkout does not clear the persistent budget or deduplication ledger. Restarting the Web server rotates the browser credential. Running watchers do not hot-reload new source code.
 
-## Current validation status
+## Usage limits
 
-On macOS `26.1117.41037`, the desktop package no longer contains the message names used by the plugin to resume a conversation. For Windows `26.1117.4957.0`, the release manifest identifies the build but gives no information about its continuation interface. [Compatibility details](docs/latest-compatibility-check.md).
-
-Validated locally:
-
-- App version and local IPC compatibility checks;
-- read-only conversation and usage-window discovery;
-- isolated policy, persistence, locking, cancellation, and transport behavior;
-- authenticated loopback Web API and browser UI behavior;
-- stale-response, stale-session, duplicate-click, and uncertain-mutation protection;
-- source launcher behavior outside the repository directory;
-- Windows named-pipe transport, App/CLI diagnostic metadata and runtime protocol checks, background locking, and selector-free read-only queries;
-- isolated CI on Windows, macOS, and Linux.
-
-Validated with a real account on the previously validated macOS Codex desktop App builds listed above:
-
-- two successful end-to-end runs from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
-
-Validated on a real Windows 11 machine with the Codex desktop App signed in to a ChatGPT Free account:
-
-- one successful end-to-end run from actual usage exhaustion, across a natural reset boundary, to an automatically confirmed continuation in the original task.
-
-Current automated suite:
-
-```text
-Python tests: 142 total (141 passed locally; 1 Windows-only launcher test skipped)
-Browser UI tests: 26 passed
-Runtime dependencies: 0
-```
-
-Remaining limitations:
-
-- every future Codex desktop App version and internal protocol change;
-- every account, machine, sleep/network condition, and task-state combination beyond the three completed real-world runs;
-- plan-specific combinations not yet repeated: the Windows run used ChatGPT Free, while the existing paid-plan reset runs were completed on macOS; the controller follows the reset metadata returned by the signed-in account rather than hard-coding a plan duration;
-- guaranteed completion of the user's overall task after a turn finishes.
+Reset times depend on the signed-in account. The plugin reads the quota again after the expected reset time. An incompatible desktop interface, a pending approval, or an uncertain delivery stops automatic continuation.
 
 ## Troubleshooting
 
