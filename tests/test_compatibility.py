@@ -165,7 +165,7 @@ class DiagnosticCommandTests(unittest.TestCase):
         server.return_value.__enter__.return_value.query.return_value = {}
         result = self.invoke('doctor')
         self.assertEqual(result['ipc'], 'connected')
-        self.assertTrue(result['autoResumeAllowed'])
+        self.assertFalse(result['autoResumeAllowed'])
         self.assertEqual(result['app']['version'], UNKNOWN['version'])
         self.assertIn('不代表', result['note'])
         self.assertIn('quotaReason', result)
@@ -173,11 +173,30 @@ class DiagnosticCommandTests(unittest.TestCase):
         version.assert_called_once_with(unittest.mock.ANY)
 
     @patch('codex_resume.__main__.ReadOnlyServer')
+    @patch('codex_resume.__main__.Desktop')
     @patch('codex_resume.__main__.check_version', return_value=UNKNOWN)
-    def test_failed_probe_is_not_ignored_for_unknown_version(self, version, server):
+    def test_failed_quota_probe_still_checks_desktop(self, version, desktop, server):
         server.return_value.__enter__.side_effect = AppError('protocol changed')
-        with self.assertRaisesRegex(AppError, 'protocol changed'):
-            self.invoke('doctor')
+        result = self.invoke('doctor')
+        self.assertEqual(result['quotaRead'], 'unavailable')
+        self.assertEqual(result['ipc'], 'connected')
+        self.assertFalse(result['autoResumeAllowed'])
+        desktop.return_value.__enter__.assert_called_once()
+
+    @patch('codex_resume.__main__.ReadOnlyServer')
+    @patch('codex_resume.__main__.Desktop')
+    @patch('codex_resume.__main__.check_version', return_value=UNKNOWN)
+    def test_unavailable_desktop_does_not_hide_quota_result(self, version, desktop, server):
+        desktop.return_value.__enter__.side_effect = PermissionError('private details')
+        query = server.return_value.__enter__.return_value.query
+        query.return_value = {'rateLimits': {'limitId': 'codex'}}
+        result = self.invoke('doctor')
+        self.assertEqual(result['ipc'], 'unavailable')
+        self.assertIn('访问被拒绝', result['ipcReason'])
+        self.assertEqual(result['rateLimits'], {'limitId': 'codex'})
+        self.assertEqual(result['quotaRead'], 'ok')
+        self.assertFalse(result['autoResumeAllowed'])
+        query.assert_called_once_with('account/rateLimits/read')
 
     @patch('codex_resume.__main__.inspect_task')
     @patch('codex_resume.__main__.Desktop')

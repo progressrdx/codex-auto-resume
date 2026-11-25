@@ -34,6 +34,10 @@ class ConnectionUnavailable(AppError):
     """Transient loss of transport; never evidence authorizing a send."""
 
 
+class AppUpdatedBeforeDispatch(AppError):
+    """The installation changed before any continuation request was sent."""
+
+
 class ThreadUnavailable(ConnectionUnavailable):
     """App is connected, but the selected conversation is not loaded."""
 
@@ -338,12 +342,17 @@ class Desktop:
     def resume(self, thread_id, expected_fingerprint, message_id, dispatch_guard=None):
         if self.read_only:
             raise AppError('只读诊断连接禁止自动续跑')
-        current_app = check_version(self.app_path, self.system)
+        try:
+            current_app = check_version(self.app_path, self.system)
+        except AppError as exc:
+            # The old installation can disappear during an update. No write has
+            # happened; the next connection must identify the installation anew.
+            raise AppUpdatedBeforeDispatch(str(exc)) from exc
         # App/CLI updates must not reuse an already-open connection:
         # Reconnect and revalidate live state after an update, even when protocol
         # versions appear unchanged.
         if self.app_info is not None and current_app != self.app_info:
-            raise AppError('App/CLI 在连接期间已更新；取消本次续跑，请重新连接')
+            raise AppUpdatedBeforeDispatch('App/CLI 在连接期间已更新，等待重新核验')
         state = self.snapshot(thread_id)
         if decide(state).action != 'resume' or fingerprint(state) != expected_fingerprint:
             raise AppError('发送前任务状态已改变；取消本次续跑')

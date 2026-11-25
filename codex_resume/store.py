@@ -135,6 +135,12 @@ class Store:
             self.db.rollback()
             raise
 
+    def release_unsent(self, thread_id, turn_id, message_id):
+        """Release only the exact claim the adapter confirmed it never sent."""
+        with self.db:
+            self.db.execute("""DELETE FROM attempts WHERE thread_id=? AND failed_turn=?
+                AND message_id=? AND state='dispatching'""", (thread_id, turn_id, message_id))
+
     def acknowledged(self, thread_id, turn_id, resumed_turn):
         with self.db:
             self.db.execute("UPDATE attempts SET state='sent',resumed_turn=? WHERE thread_id=? AND failed_turn=?",

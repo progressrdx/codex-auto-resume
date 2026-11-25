@@ -13,7 +13,7 @@ from .runtime import platform_name
 
 
 class ReadOnlyServer:
-    METHODS = {'account/rateLimits/read', 'thread/list', 'thread/read'}
+    METHODS = {'account/rateLimits/read', 'thread/list', 'thread/read', 'thread/turns/list'}
 
     def __init__(self, binary, home, timeout=25, system=None):
         self.binary, self.home, self.timeout = str(binary), str(home), timeout

@@ -13,7 +13,7 @@ from .policy import quota_status
 from .rpc import ReadOnlyServer
 from .runtime import codex_binary, default_app_path, discover_app_path, platform_name, process_exists
 from .store import Store
-from .tasks import inspect_task, list_conversations, stored_assessment
+from .tasks import inspect_task, list_conversations, read_stored_thread, stored_assessment
 
 
 def identifier(value):
@@ -64,8 +64,10 @@ def output(value):
 
 def watch_process_spec(args, lock_fd=None):
     """Build an independent watcher command for the source checkout."""
-    cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home), '--app', str(args.app),
-                    '--state-dir', str(args.state_dir), '_watch', args.thread,
+    cmd = [sys.executable, '-m', 'codex_resume', '--home', str(args.home)]
+    if args.app is not None:
+        cmd += ['--app', str(args.app)]
+    cmd += ['--state-dir', str(args.state_dir), '_watch', args.thread,
                     '--max-resumes', str(args.max_resumes)]
     if lock_fd is not None:
         cmd += ['--lock-fd', str(lock_fd)]
@@ -160,51 +162,76 @@ def serve_watch(args, store):
                 time.sleep(0.1)
     else:
         store.lock(args.thread, inherited_fd=args.lock_fd)
-    quota = None
+    app_path = args.app
+
+    def connect_desktop():
+        nonlocal app_path
+        app_path = args.app if args.app is not None else discover_app_path()
+        return Desktop(args.home, app_path)
+
     def read_quota():
-        nonlocal quota
-        if quota is None:
-            reader = ReadOnlyServer(codex_binary(args.app), args.home)
-            reader.__enter__()
-            quota = reader
-        try:
-            return quota.query('account/rateLimits/read')
-        except Exception:
-            quota.__exit__(None, None, None)
-            quota = None
-            raise
+        # Resolve the installed engine on each due check, including after updates.
+        with ReadOnlyServer(codex_binary(app_path), args.home) as reader:
+            return reader.query('account/rateLimits/read')
+
     def load_original(tid):
         # Revalidate eligibility before navigation as well as before dispatch.
-        with ReadOnlyServer(codex_binary(args.app), args.home) as reader:
+        with ReadOnlyServer(codex_binary(app_path), args.home) as reader:
             if any(r['id'] == tid for r in list_conversations(reader, (True,))):
                 return False
-            saved = reader.query('thread/read', {'threadId': tid, 'includeTurns': True})
-        if not stored_assessment(saved.get('thread'), tid)['canMonitor']:
+            saved = read_stored_thread(reader, tid)
+        if not stored_assessment(saved, tid)['canMonitor']:
             return False
         if not store.get(tid)['enabled']:
             return False
-        open_selected_thread(args.app, tid)
-    controller = Controller(args.thread, store, lambda: Desktop(args.home, args.app), read_quota, args.limit_id,
+        open_selected_thread(app_path, tid)
+    controller = Controller(args.thread, store, connect_desktop, read_quota, args.limit_id,
                             open_thread=load_original,
                             notify=lambda status, reason: notify_user(args.thread, status, reason))
     previous = None
-    try:
-        while controller.step():
-            state = store.get(args.thread)
-            status = (state['status'], state['reason'])
-            if status != previous:
-                output({'time': time.time(), 'status': status[0], 'reason': status[1]})
-                previous = status
-            # Small cancellable sleeps; after wake from system sleep step() rechecks everything.
-            for _ in range(30):
-                if not store.get(args.thread)['enabled']:
-                    return
-                time.sleep(1)
+    while controller.step():
         state = store.get(args.thread)
-        output({'status': state['status'], 'reason': state['reason']})
-    finally:
-        if quota:
-            quota.__exit__(None, None, None)
+        status = (state['status'], state['reason'])
+        if status != previous:
+            output({'time': time.time(), 'status': status[0], 'reason': status[1]})
+            previous = status
+        # Small cancellable sleeps; after wake from system sleep step() rechecks everything.
+        for _ in range(30):
+            if not store.get(args.thread)['enabled']:
+                return
+            time.sleep(1)
+    state = store.get(args.thread)
+    output({'status': state['status'], 'reason': state['reason']})
+
+
+def diagnose(home, app_path, version):
+    result = {'app': version, 'ipc': 'unavailable', 'quotaRead': 'unavailable',
+              'autoResumeAllowed': False, 'ready': False, 'nextCheck': None, 'rateLimits': None,
+              'note': '握手与额度诊断不代表所选任务通过了实时续跑检查'}
+    try:
+        with ReadOnlyServer(codex_binary(app_path), home) as server:
+            quota = server.query('account/rateLimits/read')
+        if not isinstance(quota, dict):
+            raise RuntimeError('额度回复格式不受支持')
+        ready, next_check, reason = quota_status(quota, time.time())
+        result.update(quotaRead='ok', ready=ready, nextCheck=next_check,
+                      rateLimits=quota.get('rateLimits'))
+    except TimeoutError:
+        reason = '额度查询超时'
+    except PermissionError:
+        reason = '额度查询进程或账户目录访问被拒绝'
+    except (OSError, RuntimeError, ValueError):
+        reason = '无法读取真实额度；请检查只读查询进程、目录权限、登录和网络'
+    result.update(reason=reason, quotaReason=reason)
+    try:
+        with Desktop(home, app_path, read_only=True):
+            pass
+        result.update(ipc='connected', ipcReason='旧版桌面接口握手成功，所选任务的实时协议尚未核验')
+    except PermissionError:
+        result['ipcReason'] = '桌面套接字或管道访问被拒绝'
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        result['ipcReason'] = '旧版桌面接口握手未完成；请检查应用是否运行以及协议是否兼容'
+    return result
 
 
 def main(argv=None):
@@ -212,7 +239,8 @@ def main(argv=None):
     # status/stop never touch the engine; discovery ambiguity must not block
     # them. web defers discovery to the calls that need the engine, so its
     # watch list and stop action stay available when discovery is ambiguous.
-    if args.app is None and args.command != 'web':
+    auto_discover = args.app is None
+    if auto_discover and args.command != 'web':
         args.app = (default_app_path() if args.command in ('status', 'stop')
                     else discover_app_path())
     args.home = args.home.expanduser().absolute()
@@ -229,21 +257,12 @@ def main(argv=None):
         result = inspect_task(args.home, args.app, args.thread, list_timeout=args.list_timeout)
         output(dict(result, note='只读检查；没有打开任务、开启托管或发送消息'))
         return
-    if args.command in ('doctor', 'list'):
+    if args.command == 'doctor':
+        output(diagnose(args.home, args.app, version))
+        return
+    if args.command == 'list':
         with ReadOnlyServer(codex_binary(args.app), args.home) as server:
-            if args.command == 'list':
-                output(list_conversations(server, timeout=args.list_timeout))
-                return
-            with Desktop(args.home, args.app, read_only=True):
-                pass
-            quota = server.query('account/rateLimits/read')
-            ready, next_check, reason = quota_status(quota, time.time())
-            output({'app': version, 'ipc': 'connected', 'quotaRead': 'ok',
-                    'autoResumeAllowed': True,
-                    'ready': ready, 'nextCheck': next_check,
-                    'reason': reason, 'quotaReason': reason,
-                    'rateLimits': quota.get('rateLimits'),
-                    'note': '只读探测成功不代表某个具体任务已可续跑'})
+            output(list_conversations(server, timeout=args.list_timeout))
         return
     store = Store(args.state_dir)
     try:
@@ -259,6 +278,8 @@ def main(argv=None):
             store.stop(args.thread)
             output({'stopped': args.thread, 'note': '只取消未来自动续跑；已经发送的消息不会被撤回'})
         elif args.command == '_watch':
+            if auto_discover:
+                args.app = None
             serve_watch(args, store)
         elif args.command == 'start':
             # Validate the exact thread before arming a background process.
@@ -280,6 +301,8 @@ def main(argv=None):
             windows = platform_name() == 'windows'
             lock_fd = None if windows else store.lock_file.fileno()
             log = args.state_dir / (args.thread + '.log')
+            if auto_discover:
+                args.app = None
             cmd, child_cwd, child_env = watch_process_spec(args, lock_fd)
             try:
                 if log.is_symlink():
@@ -330,7 +353,6 @@ def cli():
         sys.exit(130)
     except Exception as exc:
         # Known local errors contain no session content. Other exceptions stay generic.
-        from .app import AppError
         if isinstance(exc, (AppError, RuntimeError, ValueError)):
             print(str(exc), file=sys.stderr)
         else:
